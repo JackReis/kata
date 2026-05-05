@@ -78,6 +78,12 @@ export class KataClient {
 
   async updateTask(taskId: string, input: UpdateTaskInput): Promise<string[]> {
     assertIssueId(taskId);
+    for (const target of input.addBlocks ?? []) {
+      assertIssueId(target);
+    }
+    for (const blocker of input.addBlockedBy ?? []) {
+      assertIssueId(blocker);
+    }
     const changed: string[] = [];
     const current = await this.showTask(taskId);
     this.assertCanMutate(taskId, current.issue);
@@ -119,12 +125,10 @@ export class KataClient {
     }
 
     for (const target of input.addBlocks ?? []) {
-      assertIssueId(target);
       await this.runJSON(["block", taskId, target, "--json"]);
       changed.push("blocks");
     }
     for (const blocker of input.addBlockedBy ?? []) {
-      assertIssueId(blocker);
       await this.runJSON(["block", blocker, taskId, "--json"]);
       changed.push("blockedBy");
     }

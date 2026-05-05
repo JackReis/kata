@@ -132,6 +132,15 @@ describe("KataClient", () => {
     expect(calls).toEqual([["show", "24", "--json"]]);
   });
 
+  it("validates dependency ids before applying any update mutation", async () => {
+    const { runner, calls } = recordingRunner();
+    const kata = new KataClient({ runner });
+
+    await expect(kata.updateTask("25", { subject: "New title", addBlocks: ["--help"] })).rejects.toThrow("positive integer");
+
+    expect(calls).toEqual([]);
+  });
+
   it("reopens closed tasks before moving them in progress", async () => {
     const { runner, calls } = recordingRunner([
       json({
