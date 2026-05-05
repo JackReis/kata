@@ -147,7 +147,11 @@ export class KataClient {
         }
       }
       if (assigned) {
-        await this.unassign(taskId);
+        try {
+          await this.unassign(taskId);
+        } catch {
+          // Preserve the original claim failure even if ownership cleanup fails.
+        }
       }
       throw error;
     }

@@ -179,4 +179,34 @@ describe("KataClient", () => {
     expect(calls).toContainEqual(["label", "rm", "14", "in_progress", "--json"]);
     expect(calls).toContainEqual(["unassign", "14", "--json"]);
   });
+
+  it("preserves the original claim failure when unassign rollback fails", async () => {
+    const calls: string[][] = [];
+    const runner: KataRunner = async (args) => {
+      calls.push(args);
+      if (args[0] === "show") {
+        return json({
+          issue: { number: 15, title: "Rollback unassign failure", body: "Do work", status: "open", owner: null },
+          labels: [{ label: "agent:worker" }],
+          links: [],
+          comments: [],
+        });
+      }
+      if (args[0] === "comment") {
+        throw new Error("comment failed");
+      }
+      return json({ issue: { number: 15, title: "Rollback unassign failure", status: "open" }, changed: true });
+    };
+    class ThrowingUnassignKataClient extends KataClient {
+      override async unassign(taskId: string): Promise<void> {
+        calls.push(["unassign-throw", taskId]);
+        throw new Error("unassign failed");
+      }
+    }
+    const kata = new ThrowingUnassignKataClient({ runner, author: "pi-agent" });
+
+    await expect(kata.claimForExecution("15")).rejects.toThrow("comment failed");
+
+    expect(calls).toContainEqual(["unassign-throw", "15"]);
+  });
 });
