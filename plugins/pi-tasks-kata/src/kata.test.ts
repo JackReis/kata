@@ -87,7 +87,7 @@ describe("KataClient", () => {
         comments: [],
       }),
     ]);
-    const kata = new KataClient({ runner });
+    const kata = new KataClient({ runner, author: "agent-a" });
 
     await kata.updateTask("3", {
       subject: "New title",
@@ -99,12 +99,37 @@ describe("KataClient", () => {
     });
 
     expect(calls).toEqual([
-      ["edit", "3", "--title", "New title", "--body", "New body", "--owner", "agent-a", "--json"],
       ["show", "3", "--json"],
+      ["edit", "3", "--title", "New title", "--body", "New body", "--owner", "agent-a", "--json"],
       ["label", "add", "3", "in_progress", "--json"],
       ["block", "3", "4", "--json"],
       ["block", "2", "3", "--json"],
     ]);
+  });
+
+  it("rejects option-like task ids before calling Kata", async () => {
+    const { runner, calls } = recordingRunner();
+    const kata = new KataClient({ runner });
+
+    await expect(kata.showTask("--help")).rejects.toThrow("positive integer");
+
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects updates to tasks owned by another agent", async () => {
+    const { runner, calls } = recordingRunner([
+      json({
+        issue: { number: 24, title: "Owned", body: "No touch", status: "open", owner: "other-agent" },
+        labels: [],
+        links: [],
+        comments: [],
+      }),
+    ]);
+    const kata = new KataClient({ runner, author: "pi-agent" });
+
+    await expect(kata.updateTask("24", { status: "pending" })).rejects.toThrow("already owned by other-agent");
+
+    expect(calls).toEqual([["show", "24", "--json"]]);
   });
 
   it("reopens closed tasks before moving them in progress", async () => {

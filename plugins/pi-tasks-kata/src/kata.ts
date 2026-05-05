@@ -65,6 +65,7 @@ export class KataClient {
   }
 
   async showTask(taskId: string): Promise<KataIssueDetail> {
+    assertIssueId(taskId);
     const env = await this.runJSON(["show", taskId, "--json"]);
     if (!env.issue) throw new Error(`Task #${taskId} not found`);
     return {
@@ -76,7 +77,14 @@ export class KataClient {
   }
 
   async updateTask(taskId: string, input: UpdateTaskInput): Promise<string[]> {
+    assertIssueId(taskId);
     const changed: string[] = [];
+    const current = await this.showTask(taskId);
+    this.assertCanMutate(taskId, current.issue);
+    if (input.owner !== undefined && input.owner !== this.author) {
+      throw new Error(`Task #${taskId} owner can only be changed to ${this.author}`);
+    }
+
     const editArgs = ["edit", taskId];
     if (input.subject !== undefined) editArgs.push("--title", input.subject);
     if (input.description !== undefined) editArgs.push("--body", input.description);
@@ -86,8 +94,7 @@ export class KataClient {
       changed.push("details");
     }
 
-    const current = input.status ? await this.showTask(taskId) : undefined;
-    const isClosed = current?.issue.status === "closed";
+    const isClosed = current.issue.status === "closed";
 
     if (input.status === "in_progress") {
       if (isClosed) {
@@ -112,10 +119,12 @@ export class KataClient {
     }
 
     for (const target of input.addBlocks ?? []) {
+      assertIssueId(target);
       await this.runJSON(["block", taskId, target, "--json"]);
       changed.push("blocks");
     }
     for (const blocker of input.addBlockedBy ?? []) {
+      assertIssueId(blocker);
       await this.runJSON(["block", blocker, taskId, "--json"]);
       changed.push("blockedBy");
     }
@@ -132,6 +141,7 @@ export class KataClient {
   }
 
   async claimForExecution(taskId: string, options: ClaimOptions = {}): Promise<ExecutionClaim> {
+    assertIssueId(taskId);
     const claimLockPath = await this.acquireClaimLock(taskId);
     try {
       const claim = await this.withClaimLock(taskId, () => this.claimForExecutionLocked(taskId, options));
@@ -221,22 +231,27 @@ export class KataClient {
   }
 
   async assign(taskId: string, owner: string): Promise<void> {
+    assertIssueId(taskId);
     await this.runJSON(["assign", taskId, owner, "--json"]);
   }
 
   async unassign(taskId: string): Promise<void> {
+    assertIssueId(taskId);
     await this.runJSON(["unassign", taskId, "--json"]);
   }
 
   async comment(taskId: string, body: string): Promise<void> {
+    assertIssueId(taskId);
     await this.runJSON(["comment", taskId, "--body", body, "--json"]);
   }
 
   async addLabel(taskId: string, label: string): Promise<void> {
+    assertIssueId(taskId);
     await this.runJSON(["label", "add", taskId, label, "--json"]);
   }
 
   async removeLabel(taskId: string, label: string): Promise<void> {
+    assertIssueId(taskId);
     try {
       await this.runJSON(["label", "rm", taskId, label, "--json"]);
     } catch (error) {
@@ -285,6 +300,12 @@ export class KataClient {
     await rm(lockPath, { recursive: true, force: true });
   }
 
+  private assertCanMutate(taskId: string, issue: KataIssue): void {
+    if (issue.owner && issue.owner !== this.author) {
+      throw new Error(`Task #${taskId} is already owned by ${issue.owner}`);
+    }
+  }
+
   private async runJSON(args: string[]): Promise<KataEnvelope> {
     const out = await this.runner(this.withWorkspace(args));
     return JSON.parse(out) as KataEnvelope;
@@ -317,7 +338,8 @@ export const defaultKataRunner: KataRunner = (args, options = {}) =>
         resolve(stdout);
         return;
       }
-      reject(new Error(`${kataCommandForError(args)} failed with exit ${code}: ${stderr || stdout}`));
+      const outputNote = stderr || stdout ? " (output omitted)" : "";
+      reject(new Error(`${kataCommandForError(args)} failed with exit ${code}${outputNote}`));
     });
   });
 
@@ -362,6 +384,12 @@ function isAlreadyExistsError(error: unknown): boolean {
 
 function safeLockName(taskId: string): string {
   return taskId.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function assertIssueId(issueId: string): void {
+  if (!/^[1-9]\d*$/.test(issueId)) {
+    throw new Error(`Kata issue id must be a positive integer, got ${JSON.stringify(issueId)}`);
+  }
 }
 
 function agentTypeFromLabels(labels: string[]): string | undefined {
