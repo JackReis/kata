@@ -64,7 +64,14 @@ describe("KataClient", () => {
   });
 
   it("updates details, status labels, and dependency links with Kata commands", async () => {
-    const { runner, calls } = recordingRunner();
+    const { runner, calls } = recordingRunner([
+      json({
+        issue: { number: 3, title: "New title", body: "New body", status: "open", owner: "agent-a" },
+        labels: [],
+        links: [],
+        comments: [],
+      }),
+    ]);
     const kata = new KataClient({ runner });
 
     await kata.updateTask("3", {
@@ -78,9 +85,49 @@ describe("KataClient", () => {
 
     expect(calls).toEqual([
       ["edit", "3", "--title", "New title", "--body", "New body", "--owner", "agent-a", "--json"],
+      ["show", "3", "--json"],
       ["label", "add", "3", "in_progress", "--json"],
       ["block", "3", "4", "--json"],
       ["block", "2", "3", "--json"],
+    ]);
+  });
+
+  it("reopens closed tasks before moving them in progress", async () => {
+    const { runner, calls } = recordingRunner([
+      json({
+        issue: { number: 22, title: "Restart", body: "Do it", status: "closed", owner: null },
+        labels: [],
+        links: [],
+        comments: [],
+      }),
+    ]);
+    const kata = new KataClient({ runner });
+
+    await kata.updateTask("22", { status: "in_progress" });
+
+    expect(calls).toEqual([
+      ["show", "22", "--json"],
+      ["reopen", "22", "--json"],
+      ["label", "add", "22", "in_progress", "--json"],
+    ]);
+  });
+
+  it("does not reopen already-open tasks when moving them pending", async () => {
+    const { runner, calls } = recordingRunner([
+      json({
+        issue: { number: 23, title: "Pause", body: "Later", status: "open", owner: null },
+        labels: [{ label: "in_progress" }],
+        links: [],
+        comments: [],
+      }),
+    ]);
+    const kata = new KataClient({ runner });
+
+    await kata.updateTask("23", { status: "pending" });
+
+    expect(calls).toEqual([
+      ["show", "23", "--json"],
+      ["label", "rm", "23", "in_progress", "--json"],
     ]);
   });
 

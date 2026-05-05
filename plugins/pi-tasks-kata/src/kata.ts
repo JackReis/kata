@@ -86,16 +86,26 @@ export class KataClient {
       changed.push("details");
     }
 
+    const current = input.status ? await this.showTask(taskId) : undefined;
+    const isClosed = current?.issue.status === "closed";
+
     if (input.status === "in_progress") {
+      if (isClosed) {
+        await this.runJSON(["reopen", taskId, "--json"]);
+      }
       await this.addLabel(taskId, "in_progress");
       changed.push("status");
     } else if (input.status === "pending") {
       await this.removeLabel(taskId, "in_progress");
-      await this.runJSON(["reopen", taskId, "--json"]);
+      if (isClosed) {
+        await this.runJSON(["reopen", taskId, "--json"]);
+      }
       changed.push("status");
     } else if (input.status === "completed") {
       await this.removeLabel(taskId, "in_progress");
-      await this.runJSON(["close", taskId, "--reason", "done", "--json"]);
+      if (!isClosed) {
+        await this.runJSON(["close", taskId, "--reason", "done", "--json"]);
+      }
       changed.push("status");
     } else if (input.status === "deleted") {
       throw new Error("TaskUpdate status=deleted is not supported by the Kata-backed plugin; use kata delete explicitly.");
