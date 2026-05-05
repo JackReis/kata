@@ -126,7 +126,7 @@ export default function (pi: ExtensionAPI) {
           } catch (error) {
             console.error(
               `[pi-tasks-kata] failed to record spawn comment for ${agentId} / task #${taskId}:`,
-              error,
+              errorMessage(error),
             );
           }
           await releaseClaimLock(kata, claim);
@@ -139,7 +139,7 @@ export default function (pi: ExtensionAPI) {
             } catch (cleanupError) {
               console.error(
                 `[pi-tasks-kata] failed to record spawn failure for task #${taskId}:`,
-                cleanupError,
+                errorMessage(cleanupError),
               );
             } finally {
               if (claim) await releaseClaimLock(kata, claim);
@@ -200,7 +200,7 @@ export default function (pi: ExtensionAPI) {
     } catch (error) {
       console.error(
         `[pi-tasks-kata] failed to record subagent ${kind} for ${agentId} / task #${taskId}:`,
-        error,
+        errorMessage(error),
       );
     }
   }
@@ -211,8 +211,12 @@ export default function (pi: ExtensionAPI) {
     } catch (error) {
       console.error(
         `[pi-tasks-kata] failed to release claim lock for task #${claim.issue.number}:`,
-        error,
+        errorMessage(error),
       );
     }
+  }
+
+  function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 }

@@ -462,6 +462,13 @@ describe("KataClient", () => {
     expect(calls).toContainEqual(["comment", "26", "--body", "TaskExecute failed via agent agent-123.\n\nError:\nboom", "--json"]);
   });
 
+  it("keeps raw command output off enumerable error properties", () => {
+    const error = new KataCommandError("kata comment failed with exit 1 (output omitted)", "secret output");
+
+    expect(error.output).toBe("secret output");
+    expect(Object.keys(error)).not.toContain("output");
+  });
+
   it("closes completed executions before removing the in-progress label", async () => {
     const { runner, calls } = recordingRunner();
     const kata = new KataClient({ runner, author: "pi-agent" });

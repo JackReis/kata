@@ -349,10 +349,18 @@ export const defaultKataRunner: KataRunner = (args, options = {}) =>
   });
 
 export class KataCommandError extends Error {
-  constructor(message: string, readonly output: string) {
+  constructor(message: string, output: string) {
     super(message);
     this.name = "KataCommandError";
+    Object.defineProperty(this, "output", {
+      value: output,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
   }
+
+  readonly output!: string;
 }
 
 export function kataCommandForError(args: string[]): string {

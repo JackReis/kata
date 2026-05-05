@@ -170,7 +170,7 @@ describe("pi-tasks-kata extension", () => {
     expect(errors).toEqual([]);
     expect(consoleError).toHaveBeenCalledWith(
       "[pi-tasks-kata] failed to record subagent completion for agent-123 / task #12:",
-      expect.any(Error),
+      "kata close failed",
     );
   });
 
@@ -210,7 +210,7 @@ describe("pi-tasks-kata extension", () => {
     ]);
     expect(consoleError).toHaveBeenCalledWith(
       "[pi-tasks-kata] failed to record spawn comment for agent-123 / task #13:",
-      expect.any(Error),
+      "spawn comment failed",
     );
   });
 
@@ -241,7 +241,7 @@ describe("pi-tasks-kata extension", () => {
     expect(calls).toContainEqual(["show", "15", "--json"]);
     expect(consoleError).toHaveBeenCalledWith(
       "[pi-tasks-kata] failed to record spawn failure for task #14:",
-      expect.any(Error),
+      "cleanup failed",
     );
   });
 });
