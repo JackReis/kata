@@ -13,6 +13,7 @@ export async function spawnSubagent(
   prompt: string,
   options: { model?: string; maxTurns?: number } = {},
   timeoutMs = 30_000,
+  onSpawned?: (agentId: string) => void,
 ): Promise<string> {
   const requestId = randomUUID();
   return new Promise((resolve, reject) => {
@@ -25,6 +26,7 @@ export async function spawnSubagent(
       unsubscribe();
       const reply = raw as RpcReply<{ id: string }>;
       if (reply.success) {
+        onSpawned?.(reply.data.id);
         resolve(reply.data.id);
       } else {
         reject(new Error(reply.error));

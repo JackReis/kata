@@ -117,8 +117,9 @@ export default function (pi: ExtensionAPI) {
           const agentId = await spawnSubagent(pi.events, claim.agentType, claim.prompt, {
             model: params.model,
             maxTurns: params.max_turns,
+          }, 30_000, (agentId) => {
+            agentTaskMap.set(agentId, taskId);
           });
-          agentTaskMap.set(agentId, taskId);
           await kata.recordAgentSpawn(taskId, agentId);
           launched.push(`#${taskId} -> agent ${agentId}`);
         } catch (error) {
@@ -141,8 +142,12 @@ export default function (pi: ExtensionAPI) {
     if (!event.id) return;
     const taskId = agentTaskMap.get(event.id);
     if (!taskId) return;
-    agentTaskMap.delete(event.id);
-    void kata.completeExecution(taskId, event.id, event.result);
+    void recordLifecycleMutation(
+      "completion",
+      event.id,
+      taskId,
+      () => kata.completeExecution(taskId, event.id as string, event.result),
+    );
   });
 
   pi.events.on("subagents:failed", (data) => {
@@ -150,8 +155,12 @@ export default function (pi: ExtensionAPI) {
     if (!event.id) return;
     const taskId = agentTaskMap.get(event.id);
     if (!taskId) return;
-    agentTaskMap.delete(event.id);
-    void kata.failExecution(taskId, event.id, event.error ?? event.status);
+    void recordLifecycleMutation(
+      "failure",
+      event.id,
+      taskId,
+      () => kata.failExecution(taskId, event.id as string, event.error ?? event.status),
+    );
   });
 
   pi.registerCommand("kata-tasks", {
@@ -160,4 +169,21 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify("Kata task tools loaded: TaskCreate, TaskList, TaskGet, TaskUpdate, TaskExecute", "info");
     },
   });
+
+  async function recordLifecycleMutation(
+    kind: "completion" | "failure",
+    agentId: string,
+    taskId: string,
+    mutate: () => Promise<void>,
+  ) {
+    try {
+      await mutate();
+      agentTaskMap.delete(agentId);
+    } catch (error) {
+      console.error(
+        `[pi-tasks-kata] failed to record subagent ${kind} for ${agentId} / task #${taskId}:`,
+        error,
+      );
+    }
+  }
 }
