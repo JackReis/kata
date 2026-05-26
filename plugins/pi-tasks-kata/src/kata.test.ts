@@ -255,13 +255,15 @@ describe("KataClient", () => {
   });
 
   it("claims and starts an executable task before returning spawn context", async () => {
+    const taskDetail = json({
+      issue: { uid: "01HZNQ7VFPK1XGD8R5MABCD4EX", short_id: "ab12", title: "Write tests", body: "Cover adapter", status: "open", owner: null },
+      labels: [{ label: "agent:worker" }],
+      links: [],
+      comments: [],
+    });
     const { runner, calls } = recordingRunner([
-      json({
-        issue: { uid: "01HZNQ7VFPK1XGD8R5MABCD4EX", short_id: "ab12", title: "Write tests", body: "Cover adapter", status: "open", owner: null },
-        labels: [{ label: "agent:worker" }],
-        links: [],
-        comments: [],
-      }),
+      taskDetail,
+      taskDetail,
     ]);
     const kata = new KataClient({ runner, author: "pi-agent" });
 
@@ -272,6 +274,7 @@ describe("KataClient", () => {
     expect(execution.prompt).toContain("Kata task ab12: Write tests");
     expect(execution.prompt).toContain("Use Vitest");
     expect(calls).toEqual([
+      ["show", "ab12", "--json"],
       ["show", "ab12", "--json"],
       ["assign", "ab12", "pi-agent", "--json"],
       ["label", "add", "ab12", "in_progress", "--json"],
@@ -302,24 +305,30 @@ describe("KataClient", () => {
 
     expect(calls).toEqual([
       ["show", "ab12", "--json"],
+      ["show", "ab12", "--json"],
       ["show", "cd34", "--json"],
     ]);
   });
 
   it("rejects tasks that are already in progress before claiming", async () => {
+    const taskDetail = json({
+      issue: { number: 6, title: "Already running", body: "Do work", status: "open", owner: "pi-agent" },
+      labels: [{ label: "agent:worker" }, { label: "in_progress" }],
+      links: [],
+      comments: [],
+    });
     const { runner, calls } = recordingRunner([
-      json({
-        issue: { number: 6, title: "Already running", body: "Do work", status: "open", owner: "pi-agent" },
-        labels: [{ label: "agent:worker" }, { label: "in_progress" }],
-        links: [],
-        comments: [],
-      }),
+      taskDetail,
+      taskDetail,
     ]);
     const kata = new KataClient({ runner, author: "pi-agent" });
 
     await expect(kata.claimForExecution("ab16")).rejects.toThrow("already in progress");
 
-    expect(calls).toEqual([["show", "ab16", "--json"]]);
+    expect(calls).toEqual([
+      ["show", "ab16", "--json"],
+      ["show", "ab16", "--json"],
+    ]);
   });
 
   it("compensates assignment and in-progress label when claim comments fail", async () => {
@@ -344,6 +353,7 @@ describe("KataClient", () => {
     await expect(kata.claimForExecution("ab18")).rejects.toThrow("comment failed");
 
     expect(calls).toEqual([
+      ["show", "ab18", "--json"],
       ["show", "ab18", "--json"],
       ["assign", "ab18", "pi-agent", "--json"],
       ["label", "add", "ab18", "in_progress", "--json"],
@@ -412,19 +422,24 @@ describe("KataClient", () => {
   });
 
   it("rejects tasks owned by another agent before claiming", async () => {
+    const taskDetail = json({
+      issue: { number: 19, title: "Owned task", body: "Do work", status: "open", owner: "other-agent" },
+      labels: [{ label: "agent:worker" }],
+      links: [],
+      comments: [],
+    });
     const { runner, calls } = recordingRunner([
-      json({
-        issue: { number: 19, title: "Owned task", body: "Do work", status: "open", owner: "other-agent" },
-        labels: [{ label: "agent:worker" }],
-        links: [],
-        comments: [],
-      }),
+      taskDetail,
+      taskDetail,
     ]);
     const kata = new KataClient({ runner, author: "pi-agent" });
 
     await expect(kata.claimForExecution("ab19")).rejects.toThrow("already owned by other-agent");
 
-    expect(calls).toEqual([["show", "ab19", "--json"]]);
+    expect(calls).toEqual([
+      ["show", "ab19", "--json"],
+      ["show", "ab19", "--json"],
+    ]);
   });
 
   it("does not unassign pre-existing ownership when claim rollback fails", async () => {
@@ -492,6 +507,37 @@ describe("KataClient", () => {
 
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(calls.filter((args) => args[0] === "label" && args[1] === "add")).toHaveLength(1);
+  });
+
+  it("serializes concurrent claims that use different aliases for the same task", async () => {
+    const calls: string[][] = [];
+    let claimed = false;
+    const runner: KataRunner = async (args) => {
+      calls.push(args);
+      if (args[0] === "show") {
+        return json({
+          issue: { uid: "01HZNQ7VFPK1XGD8R5MABCD4EX", short_id: "ab22", title: "Alias claim", body: "Do work", status: "open", owner: claimed ? "pi-agent" : null },
+          labels: claimed ? [{ label: "agent:worker" }, { label: "in_progress" }] : [{ label: "agent:worker" }],
+          links: [],
+          comments: [],
+        });
+      }
+      if (args[0] === "label" && args[1] === "add") {
+        claimed = true;
+      }
+      return json({ issue: { short_id: "ab22", title: "Alias claim", status: "open" }, changed: true });
+    };
+    const kata = new KataClient({ runner, author: "pi-agent" });
+
+    const results = await Promise.allSettled([
+      kata.claimForExecution("ab22"),
+      kata.claimForExecution("kata#ab22"),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(calls).toContainEqual(["show", "kata#ab22", "--json"]);
     expect(calls.filter((args) => args[0] === "label" && args[1] === "add")).toHaveLength(1);
   });
 

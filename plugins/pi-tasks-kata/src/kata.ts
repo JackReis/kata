@@ -146,12 +146,30 @@ export class KataClient {
 
   async claimForExecution(taskId: string, options: ClaimOptions = {}): Promise<ExecutionClaim> {
     assertIssueId(taskId);
-    const claimLockPath = await this.acquireClaimLock(taskId);
+    const { canonicalTaskId, claimLockPath } = await this.resolveClaimTarget(taskId);
     try {
-      const claim = await this.withClaimLock(taskId, () => this.claimForExecutionLocked(taskId, options));
+      const claim = await this.withClaimLock(canonicalTaskId, () => this.claimForExecutionLocked(canonicalTaskId, options));
       return { ...claim, claimLockPath };
     } catch (error) {
       await this.releaseClaimLock(claimLockPath);
+      throw error;
+    }
+  }
+
+  private async resolveClaimTarget(taskId: string): Promise<{ canonicalTaskId: string; claimLockPath: string | undefined }> {
+    const validationLockPath = await this.acquireClaimLock(taskId);
+    try {
+      const detail = await this.showTask(taskId);
+      const canonicalTaskId = claimRef(detail.issue, taskId);
+      if (canonicalTaskId === taskId) {
+        return { canonicalTaskId, claimLockPath: validationLockPath };
+      }
+
+      const claimLockPath = await this.acquireClaimLock(canonicalTaskId);
+      await this.releaseClaimLock(validationLockPath);
+      return { canonicalTaskId, claimLockPath };
+    } catch (error) {
+      await this.releaseClaimLock(validationLockPath);
       throw error;
     }
   }
@@ -405,6 +423,10 @@ function isAlreadyExistsError(error: unknown): boolean {
 
 function safeLockName(taskId: string): string {
   return taskId.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function claimRef(issue: Pick<KataIssue, "short_id" | "qualified_id" | "uid">, fallback: string): string {
+  return issue.short_id ?? issue.qualified_id ?? issue.uid ?? fallback;
 }
 
 function assertIssueId(issueId: string): void {
