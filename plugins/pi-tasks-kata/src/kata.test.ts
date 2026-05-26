@@ -118,8 +118,8 @@ describe("KataClient", () => {
       ["show", "ab13", "--json"],
       ["edit", "ab13", "--title", "New title", "--body", "New body", "--owner", "agent-a", "--json"],
       ["label", "add", "ab13", "in_progress", "--json"],
-      ["block", "ab13", "cd34", "--json"],
-      ["block", "ef56", "ab13", "--json"],
+      ["edit", "ab13", "--blocks", "cd34", "--json"],
+      ["edit", "ab13", "--blocked-by", "ef56", "--json"],
     ]);
   });
 
@@ -156,8 +156,8 @@ describe("KataClient", () => {
 
     expect(calls).toEqual([
       ["show", "ab12", "--json"],
-      ["block", "ab12", "cd34", "--json"],
-      ["block", "ef56", "ab12", "--json"],
+      ["edit", "ab12", "--blocks", "cd34", "--json"],
+      ["edit", "ab12", "--blocked-by", "ef56", "--json"],
     ]);
   });
 
@@ -243,13 +243,22 @@ describe("KataClient", () => {
         comments: [],
       }),
     ]);
-    const kata = new KataClient({ runner });
+    const kata = new KataClient({ runner, author: "pi-agent" });
 
     await kata.updateTask("ab28", { status: "completed" });
 
     expect(calls).toEqual([
       ["show", "ab28", "--json"],
-      ["close", "ab28", "--reason", "done", "--json"],
+      [
+        "close",
+        "ab28",
+        "--done",
+        "--message",
+        "Task ab28 marked completed through TaskUpdate by pi-agent; caller asserted the work is complete.",
+        "--evidence",
+        "test:TaskUpdate status=completed for ab28",
+        "--json",
+      ],
       ["label", "rm", "ab28", "in_progress", "--json"],
     ]);
   });
@@ -603,7 +612,16 @@ describe("KataClient", () => {
     await kata.completeExecution("ab27", "agent-123", "done");
 
     expect(calls.slice(0, 2)).toEqual([
-      ["close", "ab27", "--reason", "done", "--json"],
+      [
+        "close",
+        "ab27",
+        "--done",
+        "--message",
+        "Task ab27 completed through TaskExecute agent agent-123; subagent reported successful completion.",
+        "--evidence",
+        "test:TaskExecute agent agent-123 completed",
+        "--json",
+      ],
       ["label", "rm", "ab27", "in_progress", "--json"],
     ]);
   });

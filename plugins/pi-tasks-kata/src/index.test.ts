@@ -82,7 +82,16 @@ describe("pi-tasks-kata extension", () => {
     expect(result.content[0].text).toContain("ab19 -> agent agent-123");
     expect(calls).toContainEqual(["assign", "ab19", "pi-agent", "--json"]);
     expect(calls).toContainEqual(["label", "add", "ab19", "in_progress", "--json"]);
-    expect(calls).toContainEqual(["close", "ab19", "--reason", "done", "--json"]);
+    expect(calls).toContainEqual([
+      "close",
+      "ab19",
+      "--done",
+      "--message",
+      "Task ab19 completed through TaskExecute agent agent-123; subagent reported successful completion.",
+      "--evidence",
+      "test:TaskExecute agent agent-123 completed",
+      "--json",
+    ]);
     expect(calls).toContainEqual(["comment", "ab19", "--body", "TaskExecute completed via agent agent-123.\n\nResult:\ndone", "--json"]);
   });
 
@@ -135,7 +144,16 @@ describe("pi-tasks-kata extension", () => {
     await tools.get("TaskExecute").execute("call-1", { task_ids: ["ab11"] });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(calls).toContainEqual(["close", "ab11", "--reason", "done", "--json"]);
+    expect(calls).toContainEqual([
+      "close",
+      "ab11",
+      "--done",
+      "--message",
+      "Task ab11 completed through TaskExecute agent agent-123; subagent reported successful completion.",
+      "--evidence",
+      "test:TaskExecute agent agent-123 completed",
+      "--json",
+    ]);
     expect(calls).toContainEqual(["comment", "ab11", "--body", "TaskExecute completed via agent agent-123.\n\nResult:\nfast", "--json"]);
   });
 
@@ -200,7 +218,16 @@ describe("pi-tasks-kata extension", () => {
 
     expect(result.content[0].text).toContain("ab13 -> agent agent-123");
     expect(result.content[0].text).not.toContain("Failed");
-    expect(calls).toContainEqual(["close", "ab13", "--reason", "done", "--json"]);
+    expect(calls).toContainEqual([
+      "close",
+      "ab13",
+      "--done",
+      "--message",
+      "Task ab13 completed through TaskExecute agent agent-123; subagent reported successful completion.",
+      "--evidence",
+      "test:TaskExecute agent agent-123 completed",
+      "--json",
+    ]);
     expect(calls).not.toContainEqual([
       "comment",
       "ab13",

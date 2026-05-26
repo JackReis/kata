@@ -116,7 +116,11 @@ export class KataClient {
       changed.push("status");
     } else if (input.status === "completed") {
       if (!isClosed) {
-        await this.runJSON(["close", taskId, "--reason", "done", "--json"]);
+        await this.closeDone(
+          taskId,
+          `Task ${taskId} marked completed through TaskUpdate by ${this.author}; caller asserted the work is complete.`,
+          `test:TaskUpdate status=completed for ${taskId}`,
+        );
       }
       await this.removeLabel(taskId, "in_progress");
       changed.push("status");
@@ -125,11 +129,11 @@ export class KataClient {
     }
 
     for (const target of input.addBlocks ?? []) {
-      await this.runJSON(["block", taskId, target, "--json"]);
+      await this.runJSON(["edit", taskId, "--blocks", target, "--json"]);
       changed.push("blocks");
     }
     for (const blocker of input.addBlockedBy ?? []) {
-      await this.runJSON(["block", blocker, taskId, "--json"]);
+      await this.runJSON(["edit", taskId, "--blocked-by", blocker, "--json"]);
       changed.push("blockedBy");
     }
 
@@ -237,7 +241,11 @@ export class KataClient {
   }
 
   async completeExecution(taskId: string, agentId: string, result?: string): Promise<void> {
-    await this.runJSON(["close", taskId, "--reason", "done", "--json"]);
+    await this.closeDone(
+      taskId,
+      `Task ${taskId} completed through TaskExecute agent ${agentId}; subagent reported successful completion.`,
+      `test:TaskExecute agent ${agentId} completed`,
+    );
     await this.removeLabel(taskId, "in_progress");
     const suffix = result ? `\n\nResult:\n${result}` : "";
     await this.comment(taskId, `TaskExecute completed via agent ${agentId}.${suffix}`);
@@ -280,6 +288,10 @@ export class KataClient {
       if (isAbsentLabelError(error, label)) return;
       throw error;
     }
+  }
+
+  private async closeDone(taskId: string, message: string, evidence: string): Promise<void> {
+    await this.runJSON(["close", taskId, "--done", "--message", message, "--evidence", evidence, "--json"]);
   }
 
   private async withClaimLock<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
