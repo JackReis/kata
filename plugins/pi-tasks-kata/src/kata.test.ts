@@ -116,6 +116,8 @@ describe("KataClient", () => {
 
     expect(calls).toEqual([
       ["show", "ab13", "--json"],
+      ["show", "cd34", "--json"],
+      ["show", "ef56", "--json"],
       ["edit", "ab13", "--title", "New title", "--body", "New body", "--owner", "agent-a", "--json"],
       ["label", "add", "ab13", "in_progress", "--json"],
       ["edit", "ab13", "--blocks", "cd34", "--json"],
@@ -156,8 +158,39 @@ describe("KataClient", () => {
 
     expect(calls).toEqual([
       ["show", "ab12", "--json"],
+      ["show", "cd34", "--json"],
+      ["show", "ef56", "--json"],
       ["edit", "ab12", "--blocks", "cd34", "--json"],
       ["edit", "ab12", "--blocked-by", "ef56", "--json"],
+    ]);
+  });
+
+  it("resolves dependency refs before applying any update mutation", async () => {
+    const calls: string[][] = [];
+    const runner: KataRunner = async (args) => {
+      calls.push(args);
+      if (args[0] === "show" && args[1] === "ab12") {
+        return json({
+          issue: { short_id: "ab12", title: "Target", body: "Body", status: "open" },
+          labels: [],
+          links: [],
+          comments: [],
+        });
+      }
+      if (args[0] === "show" && args[1] === "kata#12") {
+        throw new KataCommandError("kata show failed with exit 1 (output omitted)", "issue not found");
+      }
+      return json({ issue: { short_id: "ab12", title: "Target", status: "open" }, changed: true });
+    };
+    const kata = new KataClient({ runner });
+
+    await expect(
+      kata.updateTask("ab12", { subject: "New title", status: "in_progress", addBlocks: ["kata#12"] }),
+    ).rejects.toThrow("dependency kata#12");
+
+    expect(calls).toEqual([
+      ["show", "ab12", "--json"],
+      ["show", "kata#12", "--json"],
     ]);
   });
 
@@ -184,6 +217,20 @@ describe("KataClient", () => {
     await expect(kata.updateTask("ab24", { status: "pending" })).rejects.toThrow("already owned by other-agent");
 
     expect(calls).toEqual([["show", "ab24", "--json"]]);
+  });
+
+  it("sanitizes server-sourced owner names in ownership errors", async () => {
+    const { runner } = recordingRunner([
+      json({
+        issue: { short_id: "ab24", title: "Owned", body: "No touch", status: "open", owner: "other\x1b[2J-agent" },
+        labels: [],
+        links: [],
+        comments: [],
+      }),
+    ]);
+    const kata = new KataClient({ runner, author: "pi-agent" });
+
+    await expect(kata.updateTask("ab24", { status: "pending" })).rejects.toThrow("already owned by other-agent");
   });
 
   it("validates dependency ids before applying any update mutation", async () => {
@@ -316,6 +363,36 @@ describe("KataClient", () => {
       ["show", "ab12", "--json"],
       ["show", "ab12", "--json"],
       ["show", "cd34", "--json"],
+    ]);
+  });
+
+  it("aborts the claim when another executor wins the in-progress label race", async () => {
+    const calls: string[][] = [];
+    const runner: KataRunner = async (args) => {
+      calls.push(args);
+      if (args[0] === "show") {
+        return json({
+          issue: { uid: "01HZNQ7VFPK1XGD8R5MABCD4EX", short_id: "ab12", title: "Contested", body: "Race", status: "open", owner: null },
+          labels: [{ label: "agent:worker" }],
+          links: [],
+          comments: [],
+        });
+      }
+      if (args[0] === "label" && args[1] === "add") {
+        return json({ issue: { short_id: "ab12", title: "Contested", status: "open" }, changed: false });
+      }
+      return json({ issue: { short_id: "ab12", title: "Contested", status: "open" }, changed: true });
+    };
+    const kata = new KataClient({ runner, author: "pi-agent" });
+
+    await expect(kata.claimForExecution("ab12")).rejects.toThrow("already in progress");
+
+    expect(calls).toEqual([
+      ["show", "ab12", "--json"],
+      ["show", "ab12", "--json"],
+      ["assign", "ab12", "pi-agent", "--json"],
+      ["label", "add", "ab12", "in_progress", "--json"],
+      ["unassign", "ab12", "--json"],
     ]);
   });
 

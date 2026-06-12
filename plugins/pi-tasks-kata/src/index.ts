@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
-import { formatTaskDetail, formatTaskList, issueRef } from "./format.js";
+import { formatTaskDetail, formatTaskList, issueRef, sanitizeLine } from "./format.js";
 import { KataClient, type KataRunner } from "./kata.js";
 import { textResult } from "./result.js";
 import { spawnSubagent } from "./subagents.js";
@@ -37,7 +37,7 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params) {
       const issue = await kata.createTask(params);
-      return textResult(`Task ${issueRef(issue)} created successfully: ${issue.title}`);
+      return textResult(`Task ${sanitizeLine(issueRef(issue))} created successfully: ${sanitizeLine(issue.title)}`);
     },
   });
 

@@ -59,6 +59,17 @@ describe("pi-tasks-kata extension", () => {
     expect([...tools.keys()]).toEqual(["TaskCreate", "TaskList", "TaskGet", "TaskUpdate", "TaskExecute"]);
   });
 
+  it("TaskCreate sanitizes server-echoed titles in its result text", async () => {
+    const { pi, tools } = fakePi(async () =>
+      json({ issue: { short_id: "ab12", title: "Fix\x1b[2J auth\nforged", status: "open" }, changed: true }),
+    );
+
+    plugin(pi);
+    const result = await tools.get("TaskCreate").execute("t1", { subject: "Fix auth", description: "Details" });
+
+    expect(result.content[0].text).toBe("Task ab12 created successfully: Fix auth\\nforged");
+  });
+
   it("TaskExecute claims the Kata task, spawns a subagent, and closes on completion", async () => {
     const calls: string[][] = [];
     const { pi, tools, handlers } = fakePi(async (args) => {

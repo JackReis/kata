@@ -21,6 +21,51 @@ describe("format helpers", () => {
     ].join("\n"));
   });
 
+  it("strips terminal escape sequences from list rows", () => {
+    const lines = formatTaskList([
+      {
+        short_id: "ab12",
+        title: "before\x1b[2Jafter",
+        status: "open",
+        owner: "click \x1b]8;;https://evil.example/\x1b\\here\x1b]8;;\x1b\\!",
+        labels: [],
+        blockedBy: [],
+      },
+    ]);
+
+    expect(lines).toBe("ab12 [pending] beforeafter (click here!)");
+  });
+
+  it("keeps list rows on a single line when fields embed newlines", () => {
+    const lines = formatTaskList([
+      { short_id: "ab12", title: "first\nef56 [pending] forged row", status: "open", labels: [], blockedBy: [] },
+    ]);
+
+    expect(lines).toBe("ab12 [pending] first\\nef56 [pending] forged row");
+  });
+
+  it("sanitizes detail fields while preserving body newlines", () => {
+    const detail: KataIssueDetail = {
+      issue: {
+        short_id: "ef56",
+        title: "safe\u202eevil",
+        body: "line one\x1b[31m\nline two",
+        status: "open",
+        owner: "own\x1b[2Jer",
+      },
+      labels: ["agent:work\x1b[31mer"],
+      comments: [{ author: "a\rgent", body: "done\nLabels: forged" }],
+      links: [],
+    };
+
+    const text = formatTaskDetail(detail);
+    expect(text).toContain("Task ef56: safeevil");
+    expect(text).toContain("Owner: owner");
+    expect(text).toContain("Description: line one\nline two");
+    expect(text).toContain("Labels: agent:worker");
+    expect(text).toContain("- agent: done\\nLabels: forged");
+  });
+
   it("formats task details from Kata show output", () => {
     const detail: KataIssueDetail = {
       issue: { uid: "01HZNQ7VFPK1XGD8R5MABCD4EX", short_id: "ef56", title: "Ship plugin", body: "Make it useful", status: "open", owner: "codex" },

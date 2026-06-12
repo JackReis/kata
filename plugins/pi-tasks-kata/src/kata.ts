@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { blockersFor, issueRef } from "./format.js";
+import { blockersFor, issueRef, sanitizeLine } from "./format.js";
 import type {
   ClaimOptions,
   CreateTaskInput,
@@ -27,6 +27,7 @@ interface KataEnvelope {
   comments?: Array<{ author?: string; body: string }>;
   labels?: Array<{ label: string }> | string[];
   links?: KataLink[];
+  changed?: boolean;
 }
 
 export class KataClient {
@@ -89,6 +90,18 @@ export class KataClient {
     this.assertCanMutate(taskId, current.issue);
     if (input.owner !== undefined && input.owner !== this.author) {
       throw new Error(`Task ${taskId} owner can only be changed to ${this.author}`);
+    }
+
+    // Resolve every dependency ref with a non-mutating show before any
+    // mutation runs, so a bad ref cannot leave a partially applied update.
+    const dependencyRefs = [...new Set([...(input.addBlocks ?? []), ...(input.addBlockedBy ?? [])])];
+    for (const ref of dependencyRefs) {
+      try {
+        await this.showTask(ref);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(`Task ${taskId} dependency ${ref} could not be resolved: ${reason}`);
+      }
     }
 
     const editArgs = ["edit", taskId];
@@ -183,7 +196,7 @@ export class KataClient {
     if (detail.issue.status === "closed") throw new Error(`Task ${taskId} is already completed`);
     if (detail.labels.includes("in_progress")) throw new Error(`Task ${taskId} is already in progress`);
     if (detail.issue.owner && detail.issue.owner !== this.author) {
-      throw new Error(`Task ${taskId} is already owned by ${detail.issue.owner}`);
+      throw new Error(`Task ${taskId} is already owned by ${sanitizeLine(detail.issue.owner)}`);
     }
 
     const openBlockers: string[] = [];
@@ -203,8 +216,13 @@ export class KataClient {
     try {
       await this.assign(taskId, this.author);
       assignedByClaim = !detail.issue.owner;
-      await this.addLabel(taskId, "in_progress");
-      labeled = true;
+      // A no-op label add means another executor claimed the task between
+      // the preflight show and this mutation; their label is not ours to
+      // roll back, so leave `labeled` false and abort the claim.
+      labeled = await this.addLabel(taskId, "in_progress");
+      if (!labeled) {
+        throw new Error(`Task ${taskId} is already in progress`);
+      }
       await this.comment(taskId, `TaskExecute started by ${this.author} using agent type ${agentType}.`);
     } catch (error) {
       if (labeled) {
@@ -275,9 +293,10 @@ export class KataClient {
     await this.runJSON(["comment", taskId, "--body", body, "--json"]);
   }
 
-  async addLabel(taskId: string, label: string): Promise<void> {
+  async addLabel(taskId: string, label: string): Promise<boolean> {
     assertIssueId(taskId);
-    await this.runJSON(["label", "add", taskId, label, "--json"]);
+    const env = await this.runJSON(["label", "add", taskId, label, "--json"]);
+    return env.changed !== false;
   }
 
   async removeLabel(taskId: string, label: string): Promise<void> {
@@ -336,7 +355,7 @@ export class KataClient {
 
   private assertCanMutate(taskId: string, issue: KataIssue): void {
     if (issue.owner && issue.owner !== this.author) {
-      throw new Error(`Task ${taskId} is already owned by ${issue.owner}`);
+      throw new Error(`Task ${taskId} is already owned by ${sanitizeLine(issue.owner)}`);
     }
   }
 

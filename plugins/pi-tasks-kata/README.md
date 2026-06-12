@@ -46,6 +46,13 @@ comments with the error.
 - All mutations go through `kata --json` CLI commands; unit tests inject a
   fake runner so command translation and the `TaskExecute` claim/rollback
   lifecycle are verified without a running daemon.
+- `kata --json` deliberately returns raw daemon bytes, so the plugin
+  sanitizes server-sourced text (titles, bodies, owners, labels, comments)
+  at its human-facing text boundary, mirroring kata's `internal/textsafe`
+  convention: ANSI CSI/OSC escapes and control/format runes are stripped,
+  and single-row fields cannot inject extra lines.
+- A claim treats a no-op `in_progress` label add (`changed: false`) as a
+  lost race and aborts instead of spawning a second executor.
 
 ## Environment
 
