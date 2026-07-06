@@ -27,6 +27,7 @@ nav = [
   {"Reference" = [
     {"CLI" = "reference/cli.md"},
     {"Configuration" = "reference/configuration.md"},
+    {"Metadata" = "reference/metadata.md"},
     {"Agent output format" = "reference/agent-output.md"},
     {"HTTP API schema" = "reference/http-api.md"},
   ]},
@@ -38,6 +39,7 @@ nav = [
     {"Remote daemon" = "operations/remote-daemon.md"},
     {"GitHub sync" = "operations/github-sync.md"},
     {"Federation" = "operations/federation.md"},
+    {"Agent orchestration" = "operations/agent-orchestration.md"},
     {"Hosted mode" = "operations/hosted-mode.md"},
     {"Backup and restore" = "operations/backup-restore.md"},
   ]},

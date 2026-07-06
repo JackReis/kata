@@ -1,6 +1,11 @@
 # Branch-orchestration primitives for kata — exploratory sketch
 
-Status: **direction confirmed 2026-07-03 — coordination substrate, metadata-first.**
+Status: **execution started 2026-07-06 — coordination substrate, metadata-first.**
+Direction confirmed 2026-07-03; on 2026-07-06 the maintainer agreed to begin
+implementation and to three adjustments (hooks as first-class attention
+writers, `kata wait` promoted to its own layer right after conventions, and the
+attention enum renamed to `ok | needs-human | stuck`), now folded in below along
+with the four open-question decisions.
 This sketch records a feature survey of an adjacent per-branch agent
 orchestrator (reviewed 2026-07-03) and proposes which of its ideas kata should
 grow. Maintainer constraints, confirmed the same day:
@@ -29,10 +34,10 @@ does not. Four ideas stand out:
    plus a *tracking issue* claimed by that branch; the issue is the handle for
    following the session.
 2. **Two-axis status.** Mechanical lifecycle (running/orphaned/done, owned by
-   the orchestrator) is kept separate from **attention** — the agent's own
-   signal of whether it needs a human: `ok`, `attention`, or `blocked`, plus a
-   one-line current-state message. The dashboard filters on attention, not on
-   guessed activity.
+   the orchestrator) is kept separate from **attention** — the working-agent
+   side's own signal of whether it needs a human: `ok`, `needs-human`, or
+   `stuck`, plus a one-line current-state message. The dashboard filters on
+   attention, not on guessed activity.
 3. **Blocking waits.** `issue wait <n>` blocks until a delegated issue closes
    or its branch raises attention, so agents can fan work out into parallel
    sub-sessions and join on them.
@@ -104,9 +109,12 @@ with user data and future reserved keys:
 
 - `work.branch` — git branch doing the work (string). Coordination metadata,
   never validated against a repository: kata does not learn git.
-- `work.attention` — `ok | attention | blocked`, asserted by the working
-  agent. Distinct from blocks/blocked-by dependency links, which model issue
-  ordering; documentation must disambiguate the two senses of "blocked".
+- `work.attention` — `ok | needs-human | stuck`, asserted by the
+  working-agent side. `needs-human` means the agent wants human input or review
+  and may still be making progress; `stuck` means it cannot proceed. The enum
+  deliberately avoids `blocked` so it does not collide with kata's
+  blocks/blocked-by dependency links, which model issue ordering rather than an
+  agent's live state.
 - `work.attention_msg` — one-line current-state message.
 
 Semantics the contract must state explicitly:
@@ -119,26 +127,57 @@ Semantics the contract must state explicitly:
   intended behavior; `If-Match` is available when a caller genuinely needs
   read-modify-write.
 - **Ownership.** One writer per key by convention: the launcher owns
-  `work.branch`; the working agent owns the attention pair. The mechanical
-  lifecycle axis (running/orphaned/done) stays in the orchestrator's process
-  supervision and is deliberately absent here.
+  `work.branch`; the *working-agent side* owns the attention pair. The
+  working-agent side is the agent itself **and** any harness hooks the launcher
+  installed into the agent's session — both are blessed writers of
+  `work.attention` / `work.attention_msg`. Pure agent self-assertion
+  under-delivers because agents forget to clear or raise attention, so a
+  launcher-installed session-stop or idle hook is a first-class way to keep the
+  signal truthful. The mechanical lifecycle axis (running/orphaned/done) stays
+  in the orchestrator's process supervision and is deliberately absent here.
 
 Plus the tracking-issue recipe as an operations-guide chapter: launcher
-creates the issue with an idempotency key and sets `work.branch`; the working
-agent keeps `work.attention` current; a coordinator follows via events or
-polling; merge automation closes with evidence via service token (existing
-issue `3r3e`). Placeholder names only (`spoke-project`, `agent-a`).
+creates the issue with an idempotency key and sets `work.branch`, and installs
+harness hooks so `work.attention` stays truthful even when the agent forgets —
+a session-start hook setting `ok`, a stop/idle hook raising `needs-human` if
+the session ends without the agent clearing it — with direct agent
+self-assertion layered on top for mid-session `stuck`/`needs-human` signals; a
+coordinator follows via `kata wait`, events, or polling; merge automation
+closes with evidence via service token (existing issue `3r3e`). Placeholder
+names only (`spoke-project`, `agent-a`).
 
-## Layer 2 — promotion and sugar (later, only if usage proves out)
+## Layer 2 — `kata wait` (fan-out/join)
+
+`kata wait` ships right after Layer 1, before any badges or TUI, because it is
+what makes the conventions a *substrate for agents* rather than just a
+dashboard schema: it lets a delegating agent fan work out into parallel
+sub-sessions and join on them. It is additive and read-only — a command
+looping over the existing SSE stream/polling — so it carries the same
+zero-cost-when-unused property as the rest of the plan.
+
+```text
+kata wait <ref> [<ref>...] [--until closed|attention|needs-human|stuck]
+  [--timeout <dur>] [--any|--all] [--poll-interval <dur>]
+```
+
+- Default `--until closed`, default `--all` (every named issue must satisfy the
+  condition). `--any` returns as soon as one does.
+- In the attention modes (`attention` matches either `needs-human` or `stuck`),
+  a *close* also completes the wait; the reported reason distinguishes a
+  close from an attention change so the caller can branch on it.
+- `--timeout` exits with a dedicated nonzero code so a caller can tell a
+  timeout from a satisfied wait.
+- Read-only state polling (default `--poll-interval 2s`). `kata wait`
+  interprets the attention enum entirely client-side, so it needs no daemon
+  changes and no registry reservation.
+
+## Layer 3 — promotion and sugar (later, only if usage proves out)
 
 - **Reserve the `work.*` keys.** When the daemon takes semantic load (e.g. a
   `list` attention filter or TUI badge), add them to `IssueRegistry` with
   validators — `work.branch` and `work.attention_msg` as strings,
   `work.attention` needing a small enum validator type. This is exactly the
   registry's documented promotion path and still adds no schema columns.
-- `kata wait <ref> [--until closed|attention|blocked] [--timeout] [--any|--all]`
-  — additive read-only command looping over the existing SSE stream/polling;
-  the fan-out/join primitive for delegating agents.
 - TUI: attention badge and filter driven by the `work.*` keys.
 - Typed columns only if expression indexes and the registry prove
   insufficient (e.g. federation-fold or hot-path join needs).
@@ -161,7 +200,7 @@ consumer, not a coupling.
 
 The design is proven when this loop works end-to-end with only Layer 0 code
 in kata: an orchestrator creates a tracking issue and sets `work.branch`; an
-agent in the worktree runs `kata meta set <ref> work.attention blocked` plus
+agent in the worktree runs `kata meta set <ref> work.attention stuck` plus
 a message; a dashboard following the event stream (or polling `list --meta`)
 surfaces the issue as needing a human within one poll interval; the agent
 clears it; merge automation closes the issue; the closed issue's `work.*`
@@ -176,15 +215,19 @@ metadata is ignored everywhere.
 - New required workflow for existing users: every layer is opt-in and
   invisible when unused.
 
-## Open questions for the maintainer
+## Decisions (2026-07-06)
 
-1. Key naming: existing reserved keys are flat (`scheduled_on`), so the
-   dotted `work.` prefix introduces a new style. Keep the prefix (clearer
-   namespacing for convention keys), go flat (`work_branch`), or pick a
-   different prefix?
-2. Should Layer 0 include the `list --meta` filter from the start, or ship
-   write/read first and add filtering when a consumer needs it?
-3. Is `kata meta` the right CLI shape, or fold into `edit --meta k=v`?
-4. Should `work.attention` be registry-reserved (validated enum) from day
-   one rather than at promotion time? Cheap to do, prevents typo'd levels,
-   but commits the key names earlier.
+The four open questions were resolved with the maintainer when execution
+started:
+
+1. **Key naming: keep the dotted `work.` prefix.** It reads as clearer
+   namespacing for convention keys; kata's own reserved keys stay flat
+   (`scheduled_on`), so the two styles signal "convention" vs "reserved".
+2. **`list --meta` ships in Layer 0.** The acceptance loop needs to poll on
+   metadata, so filtering is not deferred.
+3. **CLI shape: a dedicated `kata meta` verb** (`set`/`unset`/`get`), which
+   keeps `edit` small rather than growing `edit --meta k=v`.
+4. **`work.attention` stays registry-UNvalidated for now.** Promotion to a
+   validated reserved key remains deferred until the daemon takes on more
+   semantic load (Layer 3); `kata wait` interprets the enum client-side, so
+   nothing forces early reservation.
