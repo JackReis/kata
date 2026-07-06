@@ -11,8 +11,37 @@ import (
 	"time"
 
 	"go.kenn.io/kata/internal/db"
+	"go.kenn.io/kata/internal/metadata"
 	katauid "go.kenn.io/kata/internal/uid"
 )
+
+// composeCreateMetadata validates the initial metadata map against
+// metadata.IssueRegistry and marshals it into a canonical JSON object for the
+// issues.metadata column. Reserved keys go through their type validator;
+// unknown keys pass opaquely (mirrors PatchIssueMetadata). A JSON null value
+// is rejected — at creation there is nothing to clear, so null is a caller
+// error rather than a delete. An absent/empty map yields '{}' so the schema
+// default behavior is preserved.
+func composeCreateMetadata(in map[string]json.RawMessage) (json.RawMessage, error) {
+	if len(in) == 0 {
+		return json.RawMessage(`{}`), nil
+	}
+	m := make(map[string]json.RawMessage, len(in))
+	for key, raw := range in {
+		if len(raw) == 0 || string(raw) == "null" {
+			return nil, fmt.Errorf("metadata %q: %w: null values are not allowed at creation", key, metadata.ErrInvalidValue)
+		}
+		if err := metadata.Validate(metadata.IssueRegistry, key, raw); err != nil {
+			return nil, fmt.Errorf("validate metadata %q: %w", key, err)
+		}
+		m[key] = raw
+	}
+	blob, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("marshal create metadata: %w", err)
+	}
+	return blob, nil
+}
 
 // CreateProject inserts a new projects row.
 func (d *Store) CreateProject(ctx context.Context, name string) (db.Project, error) {
@@ -473,6 +502,15 @@ func (d *Store) createIssue(ctx context.Context, p db.CreateIssueParams) (int64,
 		}
 	}
 
+	// Validate + compose the initial metadata blob before opening a tx. A bad
+	// key/value never starts a transaction, mirroring PatchIssueMetadata.
+	// JSON null is rejected here: at creation there is nothing to clear, so a
+	// null value is a caller error rather than a delete.
+	metadataBlob, err := composeCreateMetadata(p.Metadata)
+	if err != nil {
+		return 0, db.Event{}, err
+	}
+
 	tx, err := d.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return 0, db.Event{}, fmt.Errorf("begin: %w", err)
@@ -515,11 +553,11 @@ func (d *Store) createIssue(ctx context.Context, p db.CreateIssueParams) (int64,
 	}
 	createdAt := time.Now().UTC().Format(sqliteTimeFormat)
 
-	// Insert issue + optional owner/priority columns in one statement.
+	// Insert issue + optional owner/priority/metadata columns in one statement.
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO issues(uid, project_id, short_id, title, body, author, owner, priority, created_at, updated_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		issueUID, p.ProjectID, shortID, p.Title, p.Body, p.Author, owner, p.Priority, createdAt, createdAt)
+		`INSERT INTO issues(uid, project_id, short_id, title, body, author, owner, priority, metadata, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		issueUID, p.ProjectID, shortID, p.Title, p.Body, p.Author, owner, p.Priority, string(metadataBlob), createdAt, createdAt)
 	if err != nil {
 		return 0, db.Event{}, fmt.Errorf("insert issue: %w", err)
 	}
@@ -594,7 +632,7 @@ func (d *Store) createIssue(ctx context.Context, p db.CreateIssueParams) (int64,
 		Owner:                  owner,
 		Priority:               p.Priority,
 		Status:                 "open",
-		Metadata:               json.RawMessage(`{}`),
+		Metadata:               metadataBlob,
 		Labels:                 labels,
 		Links:                  createdLinkPayloads(links, resolvedTargets, p.Author),
 		CreatedAt:              createdAt,
@@ -923,6 +961,23 @@ func (d *Store) ListIssues(ctx context.Context, p db.ListIssuesParams) ([]db.Iss
 	for _, label := range p.ExcludeLabels {
 		q += ` AND NOT EXISTS (SELECT 1 FROM issue_labels il WHERE il.issue_id = i.id AND il.label = ?)`
 		args = append(args, strings.ToLower(label))
+	}
+	// Apply metadata filters (AND logic). Each predicate iterates only the
+	// top-level keys of the metadata object via json_each, so a flat dotted
+	// key (e.g. "work.branch") is compared as a literal key and never
+	// traverses into a nested object like {"work":{"branch":...}}. The key is
+	// a bound parameter, so there is no path syntax and no injection surface.
+	// Equality targets string-valued keys (the common conventions case):
+	// json_each.value yields the JSON string's text, matched against the raw
+	// bound value.
+	for _, mf := range p.Meta {
+		if mf.HasValue {
+			q += ` AND EXISTS (SELECT 1 FROM json_each(i.metadata) je WHERE je.key = ? AND je.value = ?)`
+			args = append(args, mf.Key, mf.Value)
+		} else {
+			q += ` AND EXISTS (SELECT 1 FROM json_each(i.metadata) je WHERE je.key = ?)`
+			args = append(args, mf.Key)
+		}
 	}
 	q += ` ORDER BY i.updated_at DESC, i.id DESC`
 	if p.Limit > 0 {

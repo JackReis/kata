@@ -22,6 +22,7 @@ func newListCmd() *cobra.Command {
 	var owner string
 	var labels []string
 	var noLabels []string
+	var meta []string
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "list issues in this project",
@@ -85,6 +86,11 @@ func newListCmd() *cobra.Command {
 			}
 			for _, l := range noLabels {
 				params.Add("exclude_label", l)
+			}
+			// Metadata filters are forwarded verbatim as repeated meta params;
+			// the daemon splits each on the first "=" into key / key=value.
+			for _, m := range meta {
+				params.Add("meta", m)
 			}
 
 			// Append query string
@@ -178,6 +184,8 @@ func newListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&owner, "owner", "", "only issues owned by this actor")
 	cmd.Flags().StringSliceVar(&labels, "label", nil, "only issues with this label (repeatable, AND logic)")
 	cmd.Flags().StringSliceVar(&noLabels, "no-label", nil, "exclude issues with this label (repeatable)")
+	cmd.Flags().StringArrayVar(&meta, "meta", nil,
+		"filter by metadata key or key=value (repeatable, AND logic)")
 	return cmd
 }
 

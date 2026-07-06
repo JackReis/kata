@@ -337,6 +337,12 @@ type CreateIssueRequest struct {
 		Labels   []string                `json:"labels,omitempty"`
 		Links    []CreateInitialLinkBody `json:"links,omitempty"`
 		ForceNew bool                    `json:"force_new,omitempty"`
+		// Metadata is optional initial issue metadata. Keys are validated
+		// against metadata.IssueRegistry (reserved keys through their type
+		// validator; unknown keys pass opaquely). JSON null values are
+		// rejected — there is nothing to clear at creation. On idempotent
+		// replay this field is ignored (the stored issue is returned as-is).
+		Metadata map[string]json.RawMessage `json:"metadata,omitempty"`
 	}
 }
 
@@ -383,6 +389,11 @@ type ListIssuesRequest struct {
 	Owner         string   `query:"owner,omitempty"`
 	Labels        []string `query:"label,omitempty"`
 	ExcludeLabels []string `query:"exclude_label,omitempty"`
+	// Meta is a repeatable metadata filter. Each entry is "key" (key present
+	// in top-level metadata) or "key=value" (the key's JSON string value
+	// equals value); split on the FIRST "=". Multiple entries AND together.
+	// An empty key is a validation error.
+	Meta []string `query:"meta,omitempty"`
 }
 
 // ListAllIssuesRequest is GET /api/v1/issues — the cross-project list. The

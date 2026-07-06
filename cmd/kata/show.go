@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -108,9 +109,53 @@ func newShowCmd() *cobra.Command {
 					}
 				}
 			}
+			if len(b.Issue.Metadata) > 0 {
+				if _, err := fmt.Fprintln(out, "\n--- metadata ---"); err != nil {
+					return err
+				}
+				for _, kv := range sortedMetadata(b.Issue.Metadata) {
+					if _, err := fmt.Fprintf(out, "%s = %s\n",
+						textsafe.Line(kv.key), textsafe.Line(kv.value)); err != nil {
+						return err
+					}
+				}
+			}
 			return nil
 		},
 	}
+}
+
+// metadataKV is one rendered metadata entry: the flat key and its value as
+// compact JSON (a string value renders with quotes, e.g. "feature/x").
+type metadataKV struct {
+	key   string
+	value string
+}
+
+// sortedMetadata returns the metadata map's entries sorted by key for a stable
+// render order, each value rendered as compact JSON.
+func sortedMetadata(md map[string]json.RawMessage) []metadataKV {
+	keys := make([]string, 0, len(md))
+	for k := range md {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]metadataKV, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, metadataKV{key: k, value: compactJSON(md[k])})
+	}
+	return out
+}
+
+// compactJSON renders raw as compact JSON, falling back to the verbatim bytes
+// when compaction fails (raw is always valid JSON from the daemon, so the
+// fallback is defensive).
+func compactJSON(raw json.RawMessage) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return string(raw)
+	}
+	return buf.String()
 }
 
 // showResponseForCLI is the show command's decode of the daemon's show
@@ -118,14 +163,15 @@ func newShowCmd() *cobra.Command {
 // federation lease fields are zero when the issue is not federated.
 type showResponseForCLI struct {
 	Issue struct {
-		ShortID  string  `json:"short_id"`
-		UID      string  `json:"uid"`
-		Title    string  `json:"title"`
-		Body     string  `json:"body"`
-		Status   string  `json:"status"`
-		Author   string  `json:"author"`
-		Owner    *string `json:"owner"`
-		Priority *int64  `json:"priority"`
+		ShortID  string                     `json:"short_id"`
+		UID      string                     `json:"uid"`
+		Title    string                     `json:"title"`
+		Body     string                     `json:"body"`
+		Status   string                     `json:"status"`
+		Author   string                     `json:"author"`
+		Owner    *string                    `json:"owner"`
+		Priority *int64                     `json:"priority"`
+		Metadata map[string]json.RawMessage `json:"metadata"`
 	} `json:"issue"`
 	Comments []struct {
 		UID       string `json:"uid"`
@@ -176,6 +222,19 @@ func printShowAgent(w io.Writer, b showResponseForCLI, subjectProject string) er
 	if b.Issue.Priority != nil {
 		if err := writeAgentField(w, "Priority", fmt.Sprint(*b.Issue.Priority)); err != nil {
 			return err
+		}
+	}
+	if len(b.Issue.Metadata) > 0 {
+		if _, err := fmt.Fprintln(w, "Metadata:"); err != nil {
+			return err
+		}
+		for _, kv := range sortedMetadata(b.Issue.Metadata) {
+			if err := writeAgentKVRow(w,
+				agentRowField("key", kv.key),
+				agentRowField("value", kv.value),
+			); err != nil {
+				return err
+			}
 		}
 	}
 	if err := printShowAgentLeaseLines(w, b.Lease, b.PendingLeases, b.LeaseHubNow); err != nil {

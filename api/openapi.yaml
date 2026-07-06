@@ -449,6 +449,9 @@ components:
           type:
             - array
             - "null"
+        metadata:
+          additionalProperties: true
+          type: object
         owner:
           type: string
         priority:
@@ -4571,6 +4574,15 @@ paths:
         - explode: true
           in: query
           name: exclude_label
+          schema:
+            items:
+              type: string
+            type:
+              - array
+              - "null"
+        - explode: true
+          in: query
+          name: meta
           schema:
             items:
               type: string

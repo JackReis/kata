@@ -70,19 +70,39 @@ type CreateIssueParams struct {
 	// idx_events_idempotency.
 	IdempotencyKey         string
 	IdempotencyFingerprint string
+
+	// Optional initial metadata. Keys are validated against
+	// metadata.IssueRegistry before the row is inserted (reserved keys go
+	// through their type validator; unknown keys pass opaquely). JSON null
+	// values are rejected — there is nothing to clear at creation. Absent or
+	// empty leaves the schema's '{}' default.
+	Metadata map[string]json.RawMessage
 }
 
 // ListIssuesParams filters single-project list output.
 type ListIssuesParams struct {
 	ProjectID     int64
-	Status        string   // "open" | "closed" | "" (any)
-	Priority      *int64   // nil = no filter; non-nil = exactly this value
-	MaxPriority   *int64   // nil = no filter; non-nil = priority <= MaxPriority
-	Limit         int      // 0 = no limit
-	Unowned       bool     // only issues where owner IS NULL
-	Owner         string   // only issues where owner = this value (empty = no filter)
-	Labels        []string // issues must have ALL these labels (AND logic)
-	ExcludeLabels []string // issues must NOT have any of these labels
+	Status        string       // "open" | "closed" | "" (any)
+	Priority      *int64       // nil = no filter; non-nil = exactly this value
+	MaxPriority   *int64       // nil = no filter; non-nil = priority <= MaxPriority
+	Limit         int          // 0 = no limit
+	Unowned       bool         // only issues where owner IS NULL
+	Owner         string       // only issues where owner = this value (empty = no filter)
+	Labels        []string     // issues must have ALL these labels (AND logic)
+	ExcludeLabels []string     // issues must NOT have any of these labels
+	Meta          []MetaFilter // metadata key-presence / key=value filters (AND logic)
+}
+
+// MetaFilter is one parsed metadata filter for ListIssues. Key is the flat
+// metadata key, which MAY contain dots (e.g. "work.branch") — it is always a
+// literal top-level key, never a JSON path. When HasValue is false the filter
+// matches any issue with Key present in its top-level metadata; when true it
+// matches only issues whose Key holds the JSON string Value. Multiple filters
+// AND together.
+type MetaFilter struct {
+	Key      string
+	Value    string
+	HasValue bool
 }
 
 // ListAllIssuesParams filters cross-project list output. ProjectID==0 means

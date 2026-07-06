@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -12,11 +13,50 @@ import (
 
 	"go.kenn.io/kata/internal/api"
 	"go.kenn.io/kata/internal/db"
+	"go.kenn.io/kata/internal/metadata"
 	"go.kenn.io/kata/internal/similarity"
 	"go.kenn.io/kata/internal/uid"
 )
 
 const minIssueUIDPrefixLen = 8
+
+// validateCreateMetadata rejects invalid create-metadata before any write.
+// Reserved keys go through their type validator; unknown keys pass opaquely.
+// A JSON null value is rejected (nothing to clear at creation). Errors surface
+// as 400 invalid_metadata_value, matching the patch endpoint.
+func validateCreateMetadata(md map[string]json.RawMessage) error {
+	for key, raw := range md {
+		if len(raw) == 0 || string(raw) == "null" {
+			return api.NewError(400, "invalid_metadata_value",
+				fmt.Sprintf("metadata %q: null values are not allowed at creation", key), "", nil)
+		}
+		if err := metadata.Validate(metadata.IssueRegistry, key, raw); err != nil {
+			return api.NewError(400, "invalid_metadata_value", err.Error(), "", nil)
+		}
+	}
+	return nil
+}
+
+// parseMetaFilters turns the repeatable meta query param into db.MetaFilter
+// entries. Each raw string is "key" or "key=value", split on the FIRST "=".
+// The key is a flat metadata key that MAY contain dots — it is never a JSON
+// path. An empty key is a 400 validation error.
+func parseMetaFilters(raw []string) ([]db.MetaFilter, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]db.MetaFilter, 0, len(raw))
+	for _, r := range raw {
+		key, value, hasValue := strings.Cut(r, "=")
+		if key == "" {
+			return nil, api.NewError(400, "validation",
+				"meta filter key must not be empty",
+				"pass meta=key or meta=key=value", nil)
+		}
+		out = append(out, db.MetaFilter{Key: key, Value: value, HasValue: hasValue})
+	}
+	return out, nil
+}
 
 // registerIssuesHandlers installs the four issue routes (create/list/show/edit)
 // on humaAPI. CreateIssue writes both the issue row and the matching
@@ -47,6 +87,13 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		// fingerprint, so idempotency_mismatch keys with different priorities
 		// surface the prior issue rather than reusing it.
 		if err := validatePriorityRange(in.Body.Priority); err != nil {
+			return nil, err
+		}
+
+		// Validate metadata before the idempotency lookup so a bad value is
+		// rejected with a 400 rather than being silently absorbed by a reuse
+		// path. Mirrors the patch endpoint's invalid_metadata_value shape.
+		if err := validateCreateMetadata(in.Body.Metadata); err != nil {
 			return nil, err
 		}
 
@@ -92,8 +139,14 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 			Links:                  links,
 			IdempotencyKey:         in.IdempotencyKey,
 			IdempotencyFingerprint: idempotencyFingerprint,
+			// Metadata is validated above (validateCreateMetadata); the store
+			// re-validates defensively. On idempotent reuse this handler
+			// returns before reaching here, so replayed metadata is ignored.
+			Metadata: in.Body.Metadata,
 		})
 		switch {
+		case errors.Is(err, metadata.ErrInvalidValue):
+			return nil, api.NewError(400, "invalid_metadata_value", err.Error(), "", nil)
 		case errors.Is(err, db.ErrInitialLinkInvalidType):
 			return nil, api.NewError(400, "validation",
 				"link.type must be parent|blocks|related", "", nil)
@@ -146,6 +199,10 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, err
 		}
+		metaFilters, err := parseMetaFilters(in.Meta)
+		if err != nil {
+			return nil, err
+		}
 		issues, err := cfg.DB.ListIssues(ctx, db.ListIssuesParams{
 			ProjectID:     in.ProjectID,
 			Status:        in.Status,
@@ -156,6 +213,7 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 			Owner:         in.Owner,
 			Labels:        in.Labels,
 			ExcludeLabels: in.ExcludeLabels,
+			Meta:          metaFilters,
 		})
 		if err != nil {
 			return nil, api.NewError(500, "internal", err.Error(), "", nil)

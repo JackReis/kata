@@ -587,6 +587,7 @@ type CreateIssueRequestBody struct {
 	ForceNew *bool                   `json:"force_new,omitempty"`
 	Labels   []string                `json:"labels,omitempty"`
 	Links    []CreateInitialLinkBody `json:"links,omitempty"`
+	Metadata map[string]any          `json:"metadata,omitempty"`
 	Owner    *string                 `json:"owner,omitempty"`
 	Priority *int64                  `json:"priority,omitempty"`
 	Title    string                  `json:"title" validate:"required"`

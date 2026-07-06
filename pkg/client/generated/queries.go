@@ -135,6 +135,7 @@ type ListIssuesQuery struct {
 	Owner        *string  `json:"owner,omitempty"`
 	Label        []string `json:"label,omitempty"`
 	ExcludeLabel []string `json:"exclude_label,omitempty"`
+	Meta         []string `json:"meta,omitempty"`
 }
 
 func (l ListIssuesQuery) Validate() error {

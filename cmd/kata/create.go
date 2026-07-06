@@ -26,6 +26,7 @@ func newCreateCmd() *cobra.Command {
 		related        []string
 		owner          string
 		priority       int
+		meta           []string
 	)
 	cmd := &cobra.Command{
 		Use:   "create <title>",
@@ -52,6 +53,8 @@ func newCreateCmd() *cobra.Command {
 		"this issue is related to <ref> (symmetric, no ordering; repeatable; "+issueRefHelp+")")
 	cmd.Flags().StringVar(&owner, "owner", "", "initial owner")
 	cmd.Flags().IntVar(&priority, "priority", 0, "initial priority (0..4; 0 = highest)")
+	cmd.Flags().StringArrayVar(&meta, "meta", nil,
+		"initial metadata key=value (repeatable; value stored as a JSON string)")
 	cmd.Flags().StringVar(&idempotencyKey, "idempotency-key", "", "send Idempotency-Key header for safe retry")
 	cmd.Flags().BoolVar(&forceNew, "force-new", false, "bypass look-alike soft-block (idempotency still wins)")
 
@@ -65,6 +68,10 @@ func newCreateCmd() *cobra.Command {
 			return &cliError{Message: "title must not be empty", Kind: kindValidation, ExitCode: ExitValidation}
 		}
 		if err := validateCreateLabels(labels); err != nil {
+			return err
+		}
+		metaMap, err := parseCreateMeta(meta)
+		if err != nil {
 			return err
 		}
 		if cmd.Flags().Changed("priority") && (priority < 0 || priority > 4) {
@@ -111,6 +118,9 @@ func newCreateCmd() *cobra.Command {
 		}
 		if len(labels) > 0 {
 			req["labels"] = labels
+		}
+		if len(metaMap) > 0 {
+			req["metadata"] = metaMap
 		}
 		// Resolve every link-target ref to its wire ref string before
 		// building the payload. Refs accept the same forms as `kata show`:
@@ -239,6 +249,34 @@ func stringSliceToPeers(refs []string) []linkPeerForCLI {
 		out = append(out, linkPeerForCLI{ShortID: r})
 	}
 	return out
+}
+
+// parseCreateMeta turns repeatable --meta key=value flags into a metadata map
+// for the create body. Each entry must contain "=" (first "=" splits) with a
+// non-empty key; the value is sent as a JSON string. Complex JSON values are
+// out of scope for this flag (use `kata meta set --json-value`). Returns nil
+// for no flags so the caller's omitempty does the right thing.
+func parseCreateMeta(meta []string) (map[string]json.RawMessage, error) {
+	if len(meta) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]json.RawMessage, len(meta))
+	for _, entry := range meta {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			return nil, &cliError{
+				Message:  fmt.Sprintf("--meta %q must be key=value with a non-empty key", entry),
+				Kind:     kindUsage,
+				ExitCode: ExitUsage,
+			}
+		}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return nil, &cliError{Message: err.Error(), Kind: kindValidation, ExitCode: ExitValidation}
+		}
+		out[key] = json.RawMessage(raw)
+	}
+	return out, nil
 }
 
 func validateCreateLabels(labels []string) error {
