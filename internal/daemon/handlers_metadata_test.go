@@ -219,14 +219,39 @@ func TestPatchIssueMetadata_UnknownKey_Accepted(t *testing.T) {
 		"GET-after must surface the opaque key alongside the reserved ones")
 }
 
-func TestPatchIssueMetadata_MissingIfMatch_400(t *testing.T) {
-	env := testenv.New(t, testenv.WithAuthToken("tok"))
-	p, iss := seedProjectAndIssue(t, env)
+// TestPatchMetadata_NoIfMatch_UnconditionalWrite pins the concurrency contract
+// for both subjects: If-Match is OPTIONAL on the metadata patch endpoints.
+// Without it the patch is unconditional last-write-wins — the intended default
+// for convention keys (e.g. work.attention) whose writers must never see a
+// spurious 412 from a concurrent same-key update. The write must succeed even
+// when the entity's revision has advanced past its creation value; a caller
+// that genuinely needs read-modify-write opts in by sending If-Match.
+func TestPatchMetadata_NoIfMatch_UnconditionalWrite(t *testing.T) {
+	for _, subject := range metadataSubjects() {
+		t.Run(subject.name, func(t *testing.T) {
+			env := testenv.New(t, testenv.WithAuthToken("tok"))
+			url, rev := subject.setup(t, env)
 
-	url := fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/metadata", env.URL, p.ID, iss.ShortID)
-	resp := doPostWithIfMatch(t, env, url, `{"actor":"tester","patch":{"scheduled_on":"2026-05-20"}}`, "")
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			// Advance the revision with a conditional patch so the follow-up
+			// unconditional write cannot accidentally match the initial rev.
+			resp := doPostWithIfMatch(t, env, url,
+				`{"actor":"tester","patch":{"advance_marker":"one"}}`,
+				fmt.Sprintf(`"rev-%d"`, rev))
+			raw := readClose(t, resp)
+			require.Equalf(t, http.StatusOK, resp.StatusCode, "setup patch body: %s", raw)
+
+			resp = doPostWithIfMatch(t, env, url,
+				`{"actor":"tester","patch":{"work.attention":"needs-human"}}`, "")
+			raw = readClose(t, resp)
+			require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", raw)
+			assert.Equal(t, fmt.Sprintf(`"rev-%d"`, rev+2), resp.Header.Get("ETag"))
+
+			metadata, newRev := decodeMetadataEnvelope(t, raw, subject.envKey)
+			assert.Equal(t, rev+2, newRev)
+			assert.Contains(t, metadata, `"work.attention":"needs-human"`)
+			assert.Contains(t, string(raw), `"changed":true`)
+		})
+	}
 }
 
 // TestPatchProjectMetadata_UnknownKey_Accepted mirrors the issue test: the

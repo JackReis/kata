@@ -896,7 +896,7 @@ func TestListAndShowProject_SurfaceMetadata(t *testing.T) {
 	require.NoError(t, err)
 	_, err = h.db.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
 		ProjectID:  p.ID,
-		IfMatchRev: p.Revision,
+		IfMatchRev: db.IfMatch(p.Revision),
 		Actor:      "tester",
 		Patch:      map[string]json.RawMessage{"area": json.RawMessage(`"Personal"`)},
 	})

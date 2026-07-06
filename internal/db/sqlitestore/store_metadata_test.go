@@ -15,7 +15,7 @@ func TestPatchIssueMetadata_HappyPath(t *testing.T) {
 	d, ctx, _, iss := setupTestIssue(t)
 
 	res, err := d.PatchIssueMetadata(ctx, db.PatchIssueMetadataIn{
-		IssueID: iss.ID, IfMatchRev: iss.Revision, Actor: "tester",
+		IssueID: iss.ID, IfMatchRev: db.IfMatch(iss.Revision), Actor: "tester",
 		Patch: map[string]json.RawMessage{
 			"scheduled_on": json.RawMessage(`"2026-05-20"`),
 		},
@@ -32,7 +32,7 @@ func TestPatchIssueMetadata_StaleRevisionReturns409(t *testing.T) {
 	d, ctx, _, iss := setupTestIssue(t)
 
 	_, err := d.PatchIssueMetadata(ctx, db.PatchIssueMetadataIn{
-		IssueID: iss.ID, IfMatchRev: 99, Actor: "tester",
+		IssueID: iss.ID, IfMatchRev: db.IfMatch(99), Actor: "tester",
 		Patch: map[string]json.RawMessage{
 			"scheduled_on": json.RawMessage(`"2026-05-20"`),
 		},
@@ -48,7 +48,7 @@ func TestPatchIssueMetadata_EmptyDiffNoEvent(t *testing.T) {
 
 	// First patch sets the key (revision bumps).
 	res1, err := d.PatchIssueMetadata(ctx, db.PatchIssueMetadataIn{
-		IssueID: iss.ID, IfMatchRev: iss.Revision, Actor: "tester",
+		IssueID: iss.ID, IfMatchRev: db.IfMatch(iss.Revision), Actor: "tester",
 		Patch: map[string]json.RawMessage{
 			"scheduled_on": json.RawMessage(`"2026-05-20"`),
 		},
@@ -58,7 +58,7 @@ func TestPatchIssueMetadata_EmptyDiffNoEvent(t *testing.T) {
 
 	// Re-applying the same value is a no-op.
 	res2, err := d.PatchIssueMetadata(ctx, db.PatchIssueMetadataIn{
-		IssueID: iss.ID, IfMatchRev: res1.NewRevision, Actor: "tester",
+		IssueID: iss.ID, IfMatchRev: db.IfMatch(res1.NewRevision), Actor: "tester",
 		Patch: map[string]json.RawMessage{
 			"scheduled_on": json.RawMessage(`"2026-05-20"`),
 		},
@@ -80,7 +80,7 @@ func TestPatchIssueMetadata_InvalidKeyValueRejected(t *testing.T) {
 	d, ctx, _, iss := setupTestIssue(t)
 
 	_, err := d.PatchIssueMetadata(ctx, db.PatchIssueMetadataIn{
-		IssueID: iss.ID, IfMatchRev: iss.Revision, Actor: "tester",
+		IssueID: iss.ID, IfMatchRev: db.IfMatch(iss.Revision), Actor: "tester",
 		Patch: map[string]json.RawMessage{
 			"scheduled_on": json.RawMessage(`123`), // reserved key, wrong JSON type
 		},
@@ -94,7 +94,7 @@ func TestPatchIssueMetadata_UnknownKeyAccepted(t *testing.T) {
 	d, ctx, _, iss := setupTestIssue(t)
 
 	res, err := d.PatchIssueMetadata(ctx, db.PatchIssueMetadataIn{
-		IssueID: iss.ID, IfMatchRev: iss.Revision, Actor: "tester",
+		IssueID: iss.ID, IfMatchRev: db.IfMatch(iss.Revision), Actor: "tester",
 		Patch: map[string]json.RawMessage{
 			"definitely_not_a_key": json.RawMessage(`"yellow"`),
 		},
@@ -111,7 +111,7 @@ func TestPatchProjectMetadata_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	res, err := d.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
-		ProjectID: p.ID, IfMatchRev: p.Revision, Actor: "tester",
+		ProjectID: p.ID, IfMatchRev: db.IfMatch(p.Revision), Actor: "tester",
 		Patch: map[string]json.RawMessage{
 			"area": json.RawMessage(`"Personal"`),
 		},
@@ -129,7 +129,7 @@ func TestPatchProjectMetadata_StaleRevisionReturns409(t *testing.T) {
 	ctx := context.Background()
 	p, _ := d.CreateProject(ctx, "p")
 	_, err := d.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
-		ProjectID: p.ID, IfMatchRev: 99, Actor: "tester",
+		ProjectID: p.ID, IfMatchRev: db.IfMatch(99), Actor: "tester",
 		Patch: map[string]json.RawMessage{"area": json.RawMessage(`"X"`)},
 	})
 	var conflict *db.RevisionConflictError
@@ -143,7 +143,7 @@ func TestPatchProjectMetadata_UnknownKeyAccepted(t *testing.T) {
 	ctx := context.Background()
 	p, _ := d.CreateProject(ctx, "p")
 	res, err := d.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
-		ProjectID: p.ID, IfMatchRev: p.Revision, Actor: "tester",
+		ProjectID: p.ID, IfMatchRev: db.IfMatch(p.Revision), Actor: "tester",
 		Patch: map[string]json.RawMessage{"definitely_not_a_key": json.RawMessage(`"yellow"`)},
 	})
 	require.NoError(t, err)
@@ -157,13 +157,13 @@ func TestPatchProjectMetadata_EmptyDiffNoEvent(t *testing.T) {
 	p, _ := d.CreateProject(ctx, "p")
 
 	res1, err := d.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
-		ProjectID: p.ID, IfMatchRev: p.Revision, Actor: "tester",
+		ProjectID: p.ID, IfMatchRev: db.IfMatch(p.Revision), Actor: "tester",
 		Patch: map[string]json.RawMessage{"area": json.RawMessage(`"X"`)},
 	})
 	require.NoError(t, err)
 
 	res2, err := d.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
-		ProjectID: p.ID, IfMatchRev: res1.NewRevision, Actor: "tester",
+		ProjectID: p.ID, IfMatchRev: db.IfMatch(res1.NewRevision), Actor: "tester",
 		Patch: map[string]json.RawMessage{"area": json.RawMessage(`"X"`)},
 	})
 	require.NoError(t, err)
@@ -177,7 +177,7 @@ func TestPatchIssueMetadata_ClearKeyWithNull(t *testing.T) {
 
 	// Set a key first.
 	res1, err := d.PatchIssueMetadata(ctx, db.PatchIssueMetadataIn{
-		IssueID: iss.ID, IfMatchRev: iss.Revision, Actor: "tester",
+		IssueID: iss.ID, IfMatchRev: db.IfMatch(iss.Revision), Actor: "tester",
 		Patch: map[string]json.RawMessage{
 			"scheduled_on": json.RawMessage(`"2026-05-20"`),
 		},
@@ -186,7 +186,7 @@ func TestPatchIssueMetadata_ClearKeyWithNull(t *testing.T) {
 
 	// Clear it with null.
 	res2, err := d.PatchIssueMetadata(ctx, db.PatchIssueMetadataIn{
-		IssueID: iss.ID, IfMatchRev: res1.NewRevision, Actor: "tester",
+		IssueID: iss.ID, IfMatchRev: db.IfMatch(res1.NewRevision), Actor: "tester",
 		Patch: map[string]json.RawMessage{
 			"scheduled_on": json.RawMessage(`null`),
 		},

@@ -61,7 +61,9 @@ func (d *Store) patchIssueMetadata(ctx context.Context, in db.PatchIssueMetadata
 		return out, err
 	}
 
-	if in.IfMatchRev != curRevision {
+	// nil IfMatchRev = unconditional last-write-wins; the gate only applies
+	// when the caller opted into optimistic concurrency.
+	if in.IfMatchRev != nil && *in.IfMatchRev != curRevision {
 		return out, &db.RevisionConflictError{CurrentRevision: curRevision}
 	}
 
@@ -198,7 +200,8 @@ func (d *Store) patchProjectMetadata(ctx context.Context, in db.PatchProjectMeta
 		return out, err
 	}
 
-	if in.IfMatchRev != curRevision {
+	// nil IfMatchRev = unconditional last-write-wins, as on the issue path.
+	if in.IfMatchRev != nil && *in.IfMatchRev != curRevision {
 		return out, &db.RevisionConflictError{CurrentRevision: curRevision}
 	}
 

@@ -1361,7 +1361,7 @@ func TestSyncFederationOnceResetRetryDeliversReplayedLocalProjectEvent(t *testin
 	require.NoError(t, err)
 	metaOut, err := spoke.DB.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
 		ProjectID:  project.ID,
-		IfMatchRev: project.Revision,
+		IfMatchRev: db.IfMatch(project.Revision),
 		Actor:      "tester",
 		Patch: map[string]json.RawMessage{
 			"area": json.RawMessage(`"ops"`),
@@ -1470,7 +1470,7 @@ func TestSyncFederationOnceRecoveredResetDoesNotDeliverLocalProjectPushEcho(t *t
 
 	metaOut, err := spoke.DB.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
 		ProjectID:  project.ID,
-		IfMatchRev: project.Revision,
+		IfMatchRev: db.IfMatch(project.Revision),
 		Actor:      "tester",
 		Patch: map[string]json.RawMessage{
 			"area": json.RawMessage(`"ops"`),
@@ -1535,7 +1535,7 @@ func TestSyncFederationOncePendingResetDoesNotDeliverPostResetLocalProjectPushEc
 
 	metaOut, err := spoke.DB.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
 		ProjectID:  project.ID,
-		IfMatchRev: project.Revision,
+		IfMatchRev: db.IfMatch(project.Revision),
 		Actor:      "tester",
 		Patch: map[string]json.RawMessage{
 			"area": json.RawMessage(`"ops"`),
@@ -2284,7 +2284,7 @@ func TestSyncFederationOncePushesLargeAdoptionMetadataWithHistoricalSnapshots(t 
 	require.NoError(t, err)
 	metadataOut, err := spoke.DB.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
 		ProjectID:  localProject.ID,
-		IfMatchRev: localProject.Revision,
+		IfMatchRev: db.IfMatch(localProject.Revision),
 		Actor:      "agent",
 		Patch: map[string]json.RawMessage{
 			"large": metadataValue,
@@ -2356,7 +2356,7 @@ func TestSyncFederationOnceConsumesAdoptionMarkerForMetadataOnlyProject(t *testi
 	require.NoError(t, err)
 	metadataOut, err := spoke.DB.PatchProjectMetadata(ctx, db.PatchProjectMetadataIn{
 		ProjectID:  localProject.ID,
-		IfMatchRev: localProject.Revision,
+		IfMatchRev: db.IfMatch(localProject.Revision),
 		Actor:      "agent",
 		Patch: map[string]json.RawMessage{
 			"area": json.RawMessage(`"docs"`),

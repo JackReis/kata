@@ -426,10 +426,17 @@ type MoveIssueProjectOut struct {
 	NewRevision int64
 }
 
+// IfMatch wraps a revision for the optional IfMatchRev fields on the
+// metadata patch inputs (nil = unconditional last-write-wins).
+func IfMatch(rev int64) *int64 { return &rev }
+
 // PatchIssueMetadataIn carries inputs for PatchIssueMetadata.
+// IfMatchRev nil means unconditional: the patch applies regardless of the
+// issue's current revision (last-write-wins, the intended default for
+// convention keys). Non-nil enforces the optimistic-concurrency gate.
 type PatchIssueMetadataIn struct {
 	IssueID    int64
-	IfMatchRev int64
+	IfMatchRev *int64
 	Actor      string
 	Patch      map[string]json.RawMessage
 }
@@ -443,9 +450,10 @@ type PatchIssueMetadataOut struct {
 }
 
 // PatchProjectMetadataIn carries inputs for PatchProjectMetadata.
+// IfMatchRev nil means unconditional, as in PatchIssueMetadataIn.
 type PatchProjectMetadataIn struct {
 	ProjectID  int64
-	IfMatchRev int64
+	IfMatchRev *int64
 	Actor      string
 	Patch      map[string]json.RawMessage
 }

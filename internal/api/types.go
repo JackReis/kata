@@ -1247,6 +1247,8 @@ type DeleteRecurrenceRequest struct {
 type DeleteRecurrenceResponse struct{}
 
 // PatchIssueMetadataRequest is POST /api/v1/projects/{project_id}/issues/{ref}/metadata.
+// If-Match is optional: absent means an unconditional last-write-wins patch;
+// present it must be the current `"rev-N"` ETag (412 on mismatch).
 type PatchIssueMetadataRequest struct {
 	ProjectID int64  `path:"project_id" required:"true"`
 	Ref       string `path:"ref" required:"true"`
@@ -1268,6 +1270,7 @@ type PatchIssueMetadataResponse struct {
 }
 
 // PatchProjectMetadataRequest is POST /api/v1/projects/{project_id}/metadata.
+// If-Match is optional, with the same semantics as PatchIssueMetadataRequest.
 type PatchProjectMetadataRequest struct {
 	ProjectID int64  `path:"project_id" required:"true"`
 	IfMatch   string `header:"If-Match"`

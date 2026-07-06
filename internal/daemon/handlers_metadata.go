@@ -27,13 +27,30 @@ func registerMetadataHandlers(humaAPI huma.API, cfg ServerConfig) {
 	}, patchProjectMetadataHandler(cfg))
 }
 
+// parseOptionalIfMatchRevision parses the metadata patch endpoints' OPTIONAL
+// If-Match header. An absent header returns nil: the patch is unconditional
+// last-write-wins, the intended default for convention keys (a stop hook and
+// an agent writing work.attention concurrently must never see a spurious
+// 412). A present header must still be a well-formed "rev-N" ETag — unlike
+// move/recurrences, absence here is a choice, not an error.
+func parseOptionalIfMatchRevision(raw string) (*int64, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	rev, err := parseIfMatchRevision(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &rev, nil
+}
+
 func patchIssueMetadataHandler(cfg ServerConfig) func(context.Context, *api.PatchIssueMetadataRequest) (*api.PatchIssueMetadataResponse, error) {
 	return func(ctx context.Context, in *api.PatchIssueMetadataRequest) (*api.PatchIssueMetadataResponse, error) {
 		actor, err := attributedActor(ctx, in.Body.Actor)
 		if err != nil {
 			return nil, err
 		}
-		rev, err := parseIfMatchRevision(in.IfMatch)
+		rev, err := parseOptionalIfMatchRevision(in.IfMatch)
 		if err != nil {
 			return nil, err
 		}
@@ -83,7 +100,7 @@ func patchProjectMetadataHandler(cfg ServerConfig) func(context.Context, *api.Pa
 		if err != nil {
 			return nil, err
 		}
-		rev, err := parseIfMatchRevision(in.IfMatch)
+		rev, err := parseOptionalIfMatchRevision(in.IfMatch)
 		if err != nil {
 			return nil, err
 		}
