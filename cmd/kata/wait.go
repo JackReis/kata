@@ -407,6 +407,13 @@ func waitPollLoop(
 			}
 			st, msg, err := waitFetchState(fetchCtx, client, baseURL, t)
 			if err != nil {
+				// A fetch cut short by the wait deadline is a timeout, not a
+				// fetch failure: bail to the clean timeout result rather than
+				// counting it toward the consecutive-failure budget (which would
+				// otherwise surface ExitInternal after prior transient errors).
+				if !deadline.IsZero() && !time.Now().Before(deadline) {
+					return nil
+				}
 				if classifyFetchErr(err) {
 					// Permanent daemon error (e.g. a deleted issue's 404).
 					if !anyMode {

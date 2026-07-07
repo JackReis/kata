@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -335,6 +336,46 @@ func TestWaitTimeoutBoundsHungFetch(t *testing.T) {
 	_ = requireCLIError(t, err, ExitWaitTimeout)
 	assert.Less(t, elapsed, 2*time.Second,
 		"a hung daemon fetch must be bounded by --timeout, not block on the stuck request")
+}
+
+// TestWaitTimeoutAfterTransientFailsReportsTimeout: a fetch cut short by the
+// --timeout deadline must not be counted toward the consecutive-failure budget.
+// With two prior transient (5xx) failures, a third deadline-canceled fetch must
+// still surface as ExitWaitTimeout, not ExitInternal.
+func TestWaitTimeoutAfterTransientFailsReportsTimeout(t *testing.T) {
+	var issueGets int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/projects/resolve":
+			_, _ = w.Write([]byte(`{"project":{"id":1,"name":"kata"}}`))
+		case strings.HasPrefix(r.URL.Path, "/api/v1/projects/1/issues/"):
+			mu.Lock()
+			issueGets++
+			n := issueGets
+			mu.Unlock()
+			if n <= 2 {
+				// Two transient failures prime the consecutive-fail counter.
+				http.Error(w, "transient", http.StatusInternalServerError)
+				return
+			}
+			// The next fetch hangs until the wait deadline cancels it.
+			select {
+			case <-r.Context().Done():
+			case <-time.After(5 * time.Second):
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	resetFlags(t)
+	_, _, err := executeRootCapture(t, contextWithBaseURL(context.Background(), srv.URL),
+		"wait", "kata#abcd", "--timeout", "500ms", "--poll-interval", "20ms")
+
+	// A deadline-canceled fetch is a timeout, not the 3rd consecutive failure.
+	_ = requireCLIError(t, err, ExitWaitTimeout)
 }
 
 func TestWaitBadRefFailsFast(t *testing.T) {
