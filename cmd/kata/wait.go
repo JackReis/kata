@@ -297,6 +297,12 @@ func runWait(cmd *cobra.Command, args []string, opts waitOptions) error {
 			if rerr := reporter.report(t); rerr != nil {
 				return rerr
 			}
+			if anyMode {
+				// --any is satisfied; stop probing the remaining refs. A later
+				// ref whose fetch stalls (no --timeout to bound it) would
+				// otherwise hang the whole command despite the join being met.
+				break
+			}
 		}
 	}
 	// In --any mode, a ref that already satisfied the join during this same

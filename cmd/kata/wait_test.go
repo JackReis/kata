@@ -378,6 +378,43 @@ func TestWaitTimeoutAfterTransientFailsReportsTimeout(t *testing.T) {
 	_ = requireCLIError(t, err, ExitWaitTimeout)
 }
 
+// TestWaitAnyInitialPassStopsAfterJoinMet: in --any the initial pass must stop
+// fetching once a ref already satisfies the join. Otherwise a later stalled
+// fetch (with no --timeout to bound it) hangs even though the wait is already
+// met.
+func TestWaitAnyInitialPassStopsAfterJoinMet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/projects/resolve":
+			_, _ = w.Write([]byte(`{"project":{"id":1,"name":"kata"}}`))
+		case strings.HasSuffix(r.URL.Path, "/issues/aaaa"):
+			_, _ = w.Write([]byte(`{"issue":{"short_id":"aaaa","status":"closed","metadata":{},"revision":1}}`))
+		case strings.HasSuffix(r.URL.Path, "/issues/bbbb"):
+			// A stalled later ref: it must never be fetched once aaaa has
+			// already satisfied the --any join.
+			select {
+			case <-r.Context().Done():
+			case <-time.After(5 * time.Second):
+			}
+			_, _ = w.Write([]byte(`{"issue":{"short_id":"bbbb","status":"open","metadata":{},"revision":1}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	resetFlags(t)
+	start := time.Now()
+	stdout, _, err := executeRootCapture(t, contextWithBaseURL(context.Background(), srv.URL),
+		"wait", "kata#aaaa", "kata#bbbb", "--any", "--poll-interval", "50ms")
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "aaaa")
+	assert.Less(t, elapsed, 2*time.Second,
+		"--any must stop the initial pass once the join is met, not block on a stalled later ref")
+}
+
 func TestWaitBadRefFailsFast(t *testing.T) {
 	env, dir, _ := setupCLIWorkspace(t)
 
