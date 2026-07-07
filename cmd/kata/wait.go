@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -115,21 +116,33 @@ type waitResult struct {
 	WaitedMs     int64  `json:"waited_ms"`
 }
 
+// waitAbandoned is one ref that was dropped from the join because it returned a
+// permanent daemon error (e.g. a deleted issue's 404) while --any kept waiting
+// on the others. reason is always "error"; error carries the daemon message.
+type waitAbandoned struct {
+	Ref    string `json:"ref"`
+	Reason string `json:"reason"`
+	Error  string `json:"error"`
+}
+
 // waitJSONOutput is the single object emitted under --json at the end of a wait.
 type waitJSONOutput struct {
-	Results  []waitResult `json:"results"`
-	TimedOut bool         `json:"timed_out"`
-	Pending  []string     `json:"pending"`
+	Results   []waitResult    `json:"results"`
+	TimedOut  bool            `json:"timed_out"`
+	Pending   []string        `json:"pending"`
+	Abandoned []waitAbandoned `json:"abandoned,omitempty"`
 }
 
 // waitTarget is a ref's mutable per-run state.
 type waitTarget struct {
-	arg       string // user-supplied ref, used verbatim for display
-	pid       int64
-	refForAPI string
-	fails     int
-	done      bool
-	result    waitResult
+	arg        string // user-supplied ref, used verbatim for display
+	pid        int64
+	refForAPI  string
+	fails      int
+	done       bool
+	abandoned  bool  // dropped from the join after a permanent fetch error (--any)
+	abandonErr error // the permanent error that caused abandonment
+	result     waitResult
 }
 
 type waitOptions struct {
@@ -168,11 +181,17 @@ The --json output is a single object:
        "attention_msg": "blocked on migration", "waited_ms": 3004}
     ],
     "timed_out": false,
-    "pending": []
+    "pending": [],
+    "abandoned": [
+      {"ref": "99zz", "reason": "error", "error": "issue not found"}
+    ]
   }
 
 reason is "closed" or "attention"; attention/attention_msg are present only for
-attention completions; pending lists refs still unmet on timeout.`,
+attention completions; pending lists refs still unmet on timeout. abandoned
+(present only when non-empty) lists refs dropped from an --any join after a
+permanent daemon error such as a deleted issue; in --all a permanent error
+aborts the whole wait with the daemon's exit code instead.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWait(cmd, args, opts)
@@ -232,17 +251,25 @@ func runWait(cmd *cobra.Command, args []string, opts waitOptions) error {
 	reporter := &waitReporter{mode: currentOutputMode(), w: cmd.OutOrStdout()}
 	start := time.Now()
 
-	// Initial pass: fail fast on any unresolvable ref (listing which), and
-	// complete refs whose condition already holds at start.
+	// Initial pass: fail fast only on a permanent (4xx) unresolvable ref
+	// (listing which), and complete refs whose condition already holds at
+	// start. A transient error (transport failure, daemon 5xx) is NOT a bad
+	// ref: leave the ref pending with its fails counter primed so the poll
+	// loop's tolerance absorbs a startup blip (e.g. a daemon restarting)
+	// instead of misreporting it as an unresolvable not-found.
 	var firstFetchErr error
 	var badRefs []string
 	for _, t := range targets {
 		st, msg, ferr := waitFetchState(ctx, client, baseURL, t)
 		if ferr != nil {
-			if firstFetchErr == nil {
-				firstFetchErr = ferr
+			if classifyFetchErr(ferr) {
+				if firstFetchErr == nil {
+					firstFetchErr = ferr
+				}
+				badRefs = append(badRefs, t.arg)
+			} else {
+				t.fails = 1
 			}
-			badRefs = append(badRefs, t.arg)
 			continue
 		}
 		if evalTarget(mode, t, st, msg, start) {
@@ -275,9 +302,10 @@ func runWait(cmd *cobra.Command, args []string, opts waitOptions) error {
 
 	if reporter.mode == outputJSON {
 		out := waitJSONOutput{
-			Results:  collectResults(targets),
-			TimedOut: timedOut,
-			Pending:  pendingRefs(targets),
+			Results:   collectResults(targets),
+			TimedOut:  timedOut,
+			Pending:   pendingRefs(targets),
+			Abandoned: collectAbandoned(targets),
 		}
 		var buf bytes.Buffer
 		if err := emitJSON(&buf, out); err != nil {
@@ -337,11 +365,30 @@ func waitPollLoop(
 			}
 		}
 		for _, t := range targets {
-			if t.done {
+			if t.done || t.abandoned {
 				continue
 			}
 			st, msg, err := waitFetchState(ctx, client, baseURL, t)
 			if err != nil {
+				if classifyFetchErr(err) {
+					// Permanent daemon error (e.g. a deleted issue's 404).
+					if !anyMode {
+						// --all: one dead ref can never satisfy the join, so
+						// abort now preserving the daemon's kind/exit code
+						// (a deleted ref surfaces as not-found exit 4).
+						return err
+					}
+					// --any: drop this ref and keep waiting on the rest.
+					t.abandoned = true
+					t.abandonErr = err
+					if rerr := reporter.reportAbandoned(t); rerr != nil {
+						return rerr
+					}
+					if allAbandoned(targets) {
+						return firstAbandonErr(targets)
+					}
+					continue
+				}
 				t.fails++
 				if t.fails >= maxWaitConsecutiveFails {
 					return &cliError{
@@ -403,12 +450,7 @@ func waitFetchState(ctx context.Context, client *http.Client, baseURL string, t 
 	if status >= 400 {
 		return issueState{}, "", apiErrFromBody(status, bs)
 	}
-	var out struct {
-		Issue struct {
-			Status   string                     `json:"status"`
-			Metadata map[string]json.RawMessage `json:"metadata"`
-		} `json:"issue"`
-	}
+	var out metaShowResponse
 	if err := json.Unmarshal(bs, &out); err != nil {
 		return issueState{}, "", err
 	}
@@ -417,6 +459,27 @@ func waitFetchState(ctx context.Context, client *http.Client, baseURL string, t 
 		attention: decodeJSONString(out.Issue.Metadata[attentionKey]),
 	}
 	return st, decodeJSONString(out.Issue.Metadata[attentionMsgKey]), nil
+}
+
+// classifyFetchErr reports whether a waitFetchState error is permanent — a
+// daemon status error the ref will keep returning — versus transient. A
+// permanent error is a *cliError from apiErrFromBody carrying a 4xx-derived
+// exit code (not-found, validation, conflict, confirm): the ref is gone or
+// malformed and retrying cannot help. Everything else is transient and worth
+// retrying under the poll loop's consecutive-failure tolerance:
+//   - transport failures (no *cliError at all — connection refused, timeout,
+//     a daemon restart mid-wait),
+//   - daemon 5xx, which apiErrFromBody maps to ExitInternal.
+//
+// The 5xx→transient choice means a momentary daemon internal error is retried
+// rather than aborting the whole wait, matching the poll loop's blip
+// tolerance; a persistent 5xx still surfaces once the retry budget is spent.
+func classifyFetchErr(err error) (permanent bool) {
+	var ce *cliError
+	if errors.As(err, &ce) {
+		return ce.ExitCode != ExitInternal
+	}
+	return false
 }
 
 // decodeJSONString unwraps a JSON string metadata value, returning "" for
@@ -460,11 +523,54 @@ func collectResults(targets []*waitTarget) []waitResult {
 func pendingRefs(targets []*waitTarget) []string {
 	out := make([]string, 0)
 	for _, t := range targets {
-		if !t.done {
+		if !t.done && !t.abandoned {
 			out = append(out, t.arg)
 		}
 	}
 	return out
+}
+
+// collectAbandoned returns the abandoned refs for the --json payload.
+func collectAbandoned(targets []*waitTarget) []waitAbandoned {
+	var out []waitAbandoned
+	for _, t := range targets {
+		if !t.abandoned {
+			continue
+		}
+		msg := ""
+		if t.abandonErr != nil {
+			msg = t.abandonErr.Error()
+		}
+		out = append(out, waitAbandoned{
+			Ref:    t.arg,
+			Reason: "error",
+			Error:  textsafe.Line(msg),
+		})
+	}
+	return out
+}
+
+// allAbandoned reports whether every target was abandoned (none completed the
+// join, none still pending). In --any this means the wait can never fire, so
+// the caller surfaces the first permanent error rather than spinning.
+func allAbandoned(targets []*waitTarget) bool {
+	for _, t := range targets {
+		if !t.abandoned {
+			return false
+		}
+	}
+	return true
+}
+
+// firstAbandonErr returns the first abandoned target's permanent error,
+// preserving its daemon-derived kind/exit code.
+func firstAbandonErr(targets []*waitTarget) error {
+	for _, t := range targets {
+		if t.abandoned && t.abandonErr != nil {
+			return t.abandonErr
+		}
+	}
+	return nil
 }
 
 // waitReporter streams per-ref completion lines for the human and agent output
@@ -483,6 +589,31 @@ func (r *waitReporter) report(t *waitTarget) error {
 		return r.reportAgent(t)
 	default:
 		return r.reportHuman(t)
+	}
+}
+
+// reportAbandoned streams the one-line notice that a ref was dropped from an
+// --any join after a permanent daemon error. JSON mode collects abandoned refs
+// into the final object instead, so it is a no-op there.
+func (r *waitReporter) reportAbandoned(t *waitTarget) error {
+	msg := ""
+	if t.abandonErr != nil {
+		msg = t.abandonErr.Error()
+	}
+	switch r.mode {
+	case outputJSON:
+		return nil
+	case outputAgent:
+		var b strings.Builder
+		fmt.Fprintf(&b, "ERR wait %s reason=error", agentValue(t.arg))
+		if msg != "" {
+			fmt.Fprintf(&b, " message=%s", agentValue(msg))
+		}
+		_, err := fmt.Fprintln(r.w, b.String())
+		return err
+	default:
+		_, err := fmt.Fprintf(r.w, "%s error: %s\n", textsafe.Line(t.arg), textsafe.Line(msg))
+		return err
 	}
 }
 

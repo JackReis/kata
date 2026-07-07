@@ -86,8 +86,15 @@ func newMetaGetCmd() *cobra.Command {
 	}
 }
 
+// metaIssueWire is the minimal shared decode of the show-issue response body
+// (`{"issue": {...}}`) used by both meta and wait: short_id, status, metadata,
+// and revision are the only fields either command reads. show.go keeps its own
+// richer struct for the full `kata show` surface. Status is unused by meta but
+// carried here so waitFetchState can decode the lifecycle status through the
+// same struct instead of a second anonymous one.
 type metaIssueWire struct {
 	ShortID  string                     `json:"short_id"`
+	Status   string                     `json:"status"`
 	Metadata map[string]json.RawMessage `json:"metadata"`
 	Revision int64                      `json:"revision"`
 }

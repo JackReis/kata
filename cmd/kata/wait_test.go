@@ -53,6 +53,40 @@ func TestWaitEvalCondition(t *testing.T) {
 	}
 }
 
+func TestWaitClassifyFetchErr(t *testing.T) {
+	cases := []struct {
+		name          string
+		err           error
+		wantPermanent bool
+	}{
+		{
+			name:          "not-found-4xx-is-permanent",
+			err:           apiErrFromBody(http.StatusNotFound, []byte(`{"error":{"code":"issue_not_found","message":"issue not found"}}`)),
+			wantPermanent: true,
+		},
+		{
+			name:          "bad-request-4xx-is-permanent",
+			err:           apiErrFromBody(http.StatusBadRequest, []byte(`{"error":{"code":"validation","message":"bad ref"}}`)),
+			wantPermanent: true,
+		},
+		{
+			name:          "server-5xx-is-transient",
+			err:           apiErrFromBody(http.StatusInternalServerError, []byte(`{"error":{"code":"internal","message":"boom"}}`)),
+			wantPermanent: false,
+		},
+		{
+			name:          "transport-error-is-transient",
+			err:           errors.New("dial tcp 127.0.0.1:7777: connect: connection refused"),
+			wantPermanent: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.wantPermanent, classifyFetchErr(c.err))
+		})
+	}
+}
+
 func TestWaitParseModeRejectsUnknown(t *testing.T) {
 	_, err := parseWaitMode("banana")
 	require.Error(t, err)
@@ -320,6 +354,110 @@ func TestWaitAllStillFailsOnBadRefEvenWhenOtherRefAlreadySatisfied(t *testing.T)
 	_ = requireCLIError(t, err, ExitNotFound)
 }
 
+// TestWaitAllAbortsOnDeletedRefMidWait: a ref deleted while --all is polling
+// is a permanent 404, so the wait aborts promptly with the daemon's not-found
+// exit code (4) rather than treating it as a transient blip and eventually
+// failing with a generic internal error.
+func TestWaitAllAbortsOnDeletedRefMidWait(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	ref := createIssue(t, env, pid, "deleted mid-wait")
+
+	errc := make(chan error, 1)
+	go func() {
+		time.Sleep(waitMutDelay)
+		errc <- deleteIssueHTTP(env, pid, ref)
+	}()
+
+	start := time.Now()
+	_, err := runCLICapture(t, env, dir,
+		"wait", ref, "--poll-interval", waitFastPoll, "--timeout", waitSafetyNet)
+	require.NoError(t, <-errc)
+	_ = requireCLIError(t, err, ExitNotFound)
+	assert.Less(t, time.Since(start), 3*time.Second,
+		"a permanent 404 should abort promptly, not burn the whole timeout")
+}
+
+// TestWaitAnyAbandonsDeletedRefCompletesOnOther: in --any mode a ref that is
+// deleted mid-wait is abandoned (reported, no longer polled) while the wait
+// keeps running and completes on the second ref that closes later.
+func TestWaitAnyAbandonsDeletedRefCompletesOnOther(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	ref1 := createIssue(t, env, pid, "abandoned ref")
+	ref2 := createIssue(t, env, pid, "closes later")
+
+	errc := make(chan error, 2)
+	go func() {
+		time.Sleep(waitMutDelay)
+		errc <- deleteIssueHTTP(env, pid, ref1)
+		time.Sleep(waitMutDelay)
+		errc <- closeIssueHTTP(env, pid, ref2)
+	}()
+
+	stdout, _, err := runCLIWithErr(t, env, dir,
+		"wait", ref1, ref2, "--any", "--poll-interval", waitFastPoll, "--timeout", waitSafetyNet)
+	require.NoError(t, <-errc)
+	require.NoError(t, <-errc)
+	require.NoError(t, err)
+	assert.Contains(t, stdout, ref2)
+	assert.Contains(t, stdout, "closed")
+	// The abandoned ref is surfaced on its own line noting the error.
+	assert.Contains(t, stdout, ref1)
+	assert.Contains(t, stdout, "error")
+}
+
+// TestWaitAnyAbandonedRefAppearsInJSON: the --json payload carries an
+// abandoned ref in its own per-ref list (not in results or pending).
+func TestWaitAnyAbandonedRefAppearsInJSON(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	ref1 := createIssue(t, env, pid, "abandoned json ref")
+	ref2 := createIssue(t, env, pid, "closes later json")
+
+	errc := make(chan error, 2)
+	go func() {
+		time.Sleep(waitMutDelay)
+		errc <- deleteIssueHTTP(env, pid, ref1)
+		time.Sleep(waitMutDelay)
+		errc <- closeIssueHTTP(env, pid, ref2)
+	}()
+
+	stdout, _, err := runCLIWithErr(t, env, dir,
+		"--json", "wait", ref1, ref2, "--any", "--poll-interval", waitFastPoll, "--timeout", waitSafetyNet)
+	require.NoError(t, <-errc)
+	require.NoError(t, <-errc)
+	require.NoError(t, err)
+
+	obj := parseWaitJSON(t, stdout)
+	assert.False(t, obj.TimedOut)
+	assert.NotContains(t, obj.Pending, ref1, "abandoned ref must not be reported as pending")
+	require.Len(t, obj.Results, 1)
+	assert.Equal(t, ref2, obj.Results[0].Ref)
+	require.Len(t, obj.Abandoned, 1)
+	assert.Equal(t, ref1, obj.Abandoned[0].Ref)
+	assert.Equal(t, "error", obj.Abandoned[0].Reason)
+}
+
+// TestWaitAnyAllRefsDeletedReturnsFirstError: when every ref is deleted
+// mid-wait in --any mode, the wait returns the first permanent error rather
+// than spinning forever.
+func TestWaitAnyAllRefsDeletedReturnsFirstError(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	ref1 := createIssue(t, env, pid, "both deleted 1")
+	ref2 := createIssue(t, env, pid, "both deleted 2")
+
+	errc := make(chan error, 2)
+	go func() {
+		time.Sleep(waitMutDelay)
+		errc <- deleteIssueHTTP(env, pid, ref1)
+		errc <- deleteIssueHTTP(env, pid, ref2)
+	}()
+
+	_, err := runCLICapture(t, env, dir,
+		"wait", ref1, ref2, "--any", "--poll-interval", waitFastPoll, "--timeout", waitSafetyNet)
+	require.NoError(t, <-errc)
+	require.NoError(t, <-errc)
+	_ = requireCLIError(t, err, ExitNotFound)
+}
+
 func TestWaitAgentOutput(t *testing.T) {
 	env, dir, pid := setupCLIWorkspace(t)
 	ref := createIssue(t, env, pid, "agent output")
@@ -371,6 +509,36 @@ func closeIssueHTTP(env *testenv.Env, pid int64, ref string) error {
 	return postJSONExpectOK(
 		fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/actions/close", env.URL, pid, ref),
 		map[string]any{"actor": "tester", "source": "tui", "reason": "done"}, "")
+}
+
+// deleteIssueHTTP soft-deletes an issue via the daemon's delete action,
+// supplying the X-Kata-Confirm header the daemon requires. The workspace binds
+// the project name "kata", so the confirm value is "DELETE kata#<short_id>".
+// After this returns, a GET on the ref yields a permanent 404. Goroutine-safe
+// (returns error, no *testing.T).
+func deleteIssueHTTP(env *testenv.Env, pid int64, ref string) error {
+	bs, err := json.Marshal(map[string]any{"actor": "tester"})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/actions/delete", env.URL, pid, ref),
+		bytes.NewReader(bs))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Kata-Confirm", "DELETE kata#"+ref)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // test-only loopback
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("DELETE %s: %d %s", ref, resp.StatusCode, body)
+	}
+	return nil
 }
 
 // setAttentionHTTP patches the work.attention (and optional work.attention_msg)
