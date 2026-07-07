@@ -110,13 +110,15 @@ A delegating **coordinator** joins on sub-tasks with `kata wait`. Launch two
 sub-tasks, then block until either needs attention:
 
 ```sh
-# fan out
-a1b2=$(kata create "port the parser"   --meta work.branch=agent/parser   --idempotency-key sub-parser)
-c3d4=$(kata create "port the emitter"  --meta work.branch=agent/emitter  --idempotency-key sub-emitter)
+# fan out (--json output carries the new ref at .issue.short_id)
+a=$(kata create "port the parser"  --meta work.branch=agent/parser \
+      --idempotency-key sub-parser  --json | jq -r '.issue.short_id')
+b=$(kata create "port the emitter" --meta work.branch=agent/emitter \
+      --idempotency-key sub-emitter --json | jq -r '.issue.short_id')
 # ... launch agents on those branches ...
 
 # join: return as soon as either sub-task needs a human or closes
-kata wait a1b2 c3d4 --until attention --any
+kata wait "$a" "$b" --until attention --any
 ```
 
 `--until attention` matches either `needs-human` or `stuck`, and in the attention
