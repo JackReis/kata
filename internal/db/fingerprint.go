@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"go.kenn.io/kata/internal/metadata"
 	"go.kenn.io/kata/internal/similarity"
 )
 
@@ -127,14 +128,15 @@ func fingerprintCore(title, body string, owner *string, labels []string, sortedL
 }
 
 // canonicalMetadata renders a metadata blob to a deterministic JSON string:
-// keys sorted, each value passed through normalizeMetaValue so semantically
-// equal values (whitespace, key order within nested objects, number form)
-// collapse to identical bytes. Serialized as an array of {key,value} records
+// keys sorted, each value passed through metadata.NormalizeJSON so semantically
+// equal values (whitespace, key order within nested objects) collapse to
+// identical bytes while distinct numeric literals (including integers beyond
+// 2^53) stay distinct. Serialized as an array of {key,value} records
 // rather than a JSON object so the ordering is explicit and not dependent on
 // any encoder's map-key behavior for the outer shape.
-func canonicalMetadata(metadata map[string]json.RawMessage) string {
-	keys := make([]string, 0, len(metadata))
-	for k := range metadata {
+func canonicalMetadata(md map[string]json.RawMessage) string {
+	keys := make([]string, 0, len(md))
+	for k := range md {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
@@ -144,27 +146,10 @@ func canonicalMetadata(metadata map[string]json.RawMessage) string {
 	}
 	recs := make([]metaRec, 0, len(keys))
 	for _, k := range keys {
-		recs = append(recs, metaRec{Key: k, Value: json.RawMessage(normalizeMetaValue(metadata[k]))})
+		recs = append(recs, metaRec{Key: k, Value: json.RawMessage(metadata.NormalizeJSON(md[k]))})
 	}
 	out, _ := json.Marshal(recs) // never errors: values are pre-normalized JSON
 	return string(out)
-}
-
-// normalizeMetaValue round-trips raw through encoding/json to produce a
-// canonical form for hashing (insignificant whitespace removed, nested object
-// keys sorted, numbers normalized). Mirrors normalizeJSON in internal/metadata
-// (duplicated here to avoid an import cycle). Falls back to the original bytes
-// on error so malformed values still hash deterministically.
-func normalizeMetaValue(raw json.RawMessage) []byte {
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return raw
-	}
-	out, err := json.Marshal(v)
-	if err != nil {
-		return raw
-	}
-	return out
 }
 
 // DedupeLinks collapses duplicates from the provided InitialLink slice using

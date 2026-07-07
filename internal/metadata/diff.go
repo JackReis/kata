@@ -6,6 +6,28 @@ import (
 	"fmt"
 )
 
+// NormalizeJSON round-trips raw through encoding/json to produce a canonical
+// byte form (insignificant whitespace removed, nested object keys sorted). It
+// decodes with UseNumber so numeric literals keep their exact textual form
+// (json.Number marshals back verbatim) instead of collapsing through float64,
+// which would silently equate distinct integers beyond 2^53. On any decode or
+// re-encode error it falls back to the original bytes so malformed values still
+// normalize deterministically. This is the single canonicalizer shared by
+// metadata diffing and idempotency fingerprinting.
+func NormalizeJSON(raw json.RawMessage) []byte {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return raw
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
 // KeyDiff records the before/after JSON values for one metadata key.
 // From is nil when the key was absent (or null) in the old blob.
 // To is nil when the key was removed (or set to null) in the new blob.
@@ -40,7 +62,7 @@ func Diff(oldBlob, newBlob json.RawMessage) (map[string]KeyDiff, error) {
 			result[k] = KeyDiff{From: oldVal, To: nil}
 			continue
 		}
-		if !bytes.Equal(normalizeJSON(oldVal), normalizeJSON(newVal)) {
+		if !bytes.Equal(NormalizeJSON(oldVal), NormalizeJSON(newVal)) {
 			// Normalize null From to nil: contract says From==nil means
 			// "was absent or null", so raw `null` bytes must not leak out.
 			var from json.RawMessage
@@ -84,20 +106,4 @@ func parseMetaBlob(blob json.RawMessage) (map[string]json.RawMessage, error) {
 // isNull reports whether raw is a JSON null literal.
 func isNull(raw json.RawMessage) bool {
 	return string(raw) == "null"
-}
-
-// normalizeJSON round-trips raw through encoding/json to produce a canonical
-// form for equality comparison (e.g. removes insignificant whitespace,
-// normalises number representations). Falls back to the original bytes on
-// error.
-func normalizeJSON(raw json.RawMessage) []byte {
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return raw
-	}
-	out, err := json.Marshal(v)
-	if err != nil {
-		return raw
-	}
-	return out
 }

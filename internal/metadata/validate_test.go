@@ -13,6 +13,28 @@ import (
 const goodULID1 = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 const goodULID2 = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
 
+// TestValidateCreateValue_RejectsNullAndEmpty pins the create-time rule that a
+// null or empty value is a caller error (nothing to clear at creation), and
+// that the rejection wraps ErrInvalidValue so handlers map it to a 400.
+func TestValidateCreateValue_RejectsNullAndEmpty(t *testing.T) {
+	for _, raw := range []json.RawMessage{json.RawMessage(`null`), json.RawMessage(``)} {
+		err := ValidateCreateValue(IssueRegistry, "scheduled_on", raw)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidValue)
+		assert.Contains(t, err.Error(), "null values are not allowed at creation")
+	}
+}
+
+// TestValidateCreateValue_DelegatesToValidate pins that non-null values flow
+// through Validate: reserved keys are type-checked, unknown keys pass opaquely.
+func TestValidateCreateValue_DelegatesToValidate(t *testing.T) {
+	assert.NoError(t, ValidateCreateValue(IssueRegistry, "scheduled_on", json.RawMessage(`"2026-05-20"`)))
+	err := ValidateCreateValue(IssueRegistry, "scheduled_on", json.RawMessage(`"not-a-date"`))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidValue)
+	assert.NoError(t, ValidateCreateValue(IssueRegistry, "weird_consumer_field", json.RawMessage(`"hi"`)))
+}
+
 func TestValidateDate(t *testing.T) {
 	assert.NoError(t, Validate(IssueRegistry, "scheduled_on", json.RawMessage(`"2026-05-20"`)))
 	assert.Error(t, Validate(IssueRegistry, "scheduled_on", json.RawMessage(`"not-a-date"`)))

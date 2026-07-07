@@ -103,6 +103,21 @@ func TestDiffSurfacesUnknownKey(t *testing.T) {
 	assert.JSONEq(t, `"yellow"`, string(d["definitely_not_a_key"].To))
 }
 
+// TestDiff_LargeIntValuesDistinct pins that two distinct integers larger than
+// 2^53 are reported as a change rather than collapsing to the same float64.
+// Before NormalizeJSON used a UseNumber decoder, both sides normalized to the
+// same imprecise float and the change was silently suppressed.
+func TestDiff_LargeIntValuesDistinct(t *testing.T) {
+	old := json.RawMessage(`{"k":9223372036854775807}`)
+	newBlob := json.RawMessage(`{"k":9223372036854775806}`)
+	d, err := Diff(old, newBlob)
+	require.NoError(t, err)
+	require.Contains(t, d, "k",
+		"two distinct large integers must be reported as a change, not collapsed via float64")
+	assert.Equal(t, `9223372036854775807`, string(d["k"].From))
+	assert.Equal(t, `9223372036854775806`, string(d["k"].To))
+}
+
 func TestDiffMultipleKeys(t *testing.T) {
 	old := json.RawMessage(`{"scheduled_on":"2026-05-01","someday":true}`)
 	newBlob := json.RawMessage(`{"scheduled_on":"2026-06-01","deadline_on":"2026-07-01"}`)

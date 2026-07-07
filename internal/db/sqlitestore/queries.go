@@ -28,11 +28,8 @@ func composeCreateMetadata(in map[string]json.RawMessage) (json.RawMessage, erro
 	}
 	m := make(map[string]json.RawMessage, len(in))
 	for key, raw := range in {
-		if len(raw) == 0 || string(raw) == "null" {
-			return nil, fmt.Errorf("metadata %q: %w: null values are not allowed at creation", key, metadata.ErrInvalidValue)
-		}
-		if err := metadata.Validate(metadata.IssueRegistry, key, raw); err != nil {
-			return nil, fmt.Errorf("validate metadata %q: %w", key, err)
+		if err := metadata.ValidateCreateValue(metadata.IssueRegistry, key, raw); err != nil {
+			return nil, fmt.Errorf("metadata %q: %w", key, err)
 		}
 		m[key] = raw
 	}

@@ -26,12 +26,9 @@ const minIssueUIDPrefixLen = 8
 // as 400 invalid_metadata_value, matching the patch endpoint.
 func validateCreateMetadata(md map[string]json.RawMessage) error {
 	for key, raw := range md {
-		if len(raw) == 0 || string(raw) == "null" {
+		if err := metadata.ValidateCreateValue(metadata.IssueRegistry, key, raw); err != nil {
 			return api.NewError(400, "invalid_metadata_value",
-				fmt.Sprintf("metadata %q: null values are not allowed at creation", key), "", nil)
-		}
-		if err := metadata.Validate(metadata.IssueRegistry, key, raw); err != nil {
-			return api.NewError(400, "invalid_metadata_value", err.Error(), "", nil)
+				fmt.Sprintf("metadata %q: %v", key, err), "", nil)
 		}
 	}
 	return nil

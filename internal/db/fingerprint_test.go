@@ -222,6 +222,20 @@ func TestFingerprint_MetadataChangesFingerprint(t *testing.T) {
 		"whitespace- and key-order-equivalent metadata must hash identically")
 }
 
+// TestFingerprint_LargeIntMetadataDistinct pins that metadata values differing
+// only by a large integer beyond 2^53 produce different fingerprints. Before the
+// canonicalizer preserved integer literals (UseNumber), both values collapsed to
+// the same float64 and two distinct idempotency payloads hashed identically,
+// making the daemon silently reuse the first issue instead of returning 409.
+func TestFingerprint_LargeIntMetadataDistinct(t *testing.T) {
+	a := db.Fingerprint("t", "b", nil, nil, nil, nil,
+		map[string]json.RawMessage{"work.n": json.RawMessage(`9223372036854775807`)})
+	b := db.Fingerprint("t", "b", nil, nil, nil, nil,
+		map[string]json.RawMessage{"work.n": json.RawMessage(`9223372036854775806`)})
+	assert.NotEqual(t, a, b,
+		"large-integer metadata values must not collapse to the same fingerprint")
+}
+
 // TestFingerprint_MetadataOrderIndependent pins that the map-key insertion
 // order of metadata does not affect the hash (keys are sorted canonically).
 func TestFingerprint_MetadataOrderIndependent(t *testing.T) {
