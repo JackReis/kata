@@ -56,19 +56,27 @@ kata create <title> \
   [--blocks <ref>] \
   [--blocked-by <ref>] \
   [--related <ref>] \
+  [--meta key=value] \
   [--idempotency-key KEY] \
   [--force-new]
 ```
+
+`--meta` binds string-valued metadata at creation and is repeatable.
 
 List and inspect:
 
 ```sh
 kata list [--status open|closed|all] [--limit N]
 kata list [--label LABEL] [--no-label LABEL] [--owner NAME] [--unowned]
+kata list [--meta key[=value]]
 kata show <issue-ref>
 kata search <query> [--limit N] [--include-deleted]
 kata search <query> [--lexical | --hybrid | --semantic]
 ```
+
+For `kata list`, `--meta` is repeatable. A bare key filters on presence,
+while `key=value` filters on string equality. Multiple filters combine with
+AND logic.
 
 By default `kata search` runs lexical (FTS) search. When the daemon has
 [semantic search](../guide/semantic-search.md) configured, search
@@ -203,6 +211,34 @@ kata claim <ref> [--force] [--comment TEXT]
 
 `kata claim` atomically sets ownership to the current actor and fails if the
 issue is already owned by someone else unless `--force` is used.
+
+## Issue metadata
+
+```sh
+kata meta set <ref> <key> <value> [--json-value] [--if-match <rev>]
+kata meta unset <ref> <key>
+kata meta get <ref> [key]
+```
+
+`kata meta set` stores the value as a JSON string by default; `--json-value`
+treats the value as raw JSON. For optimistic concurrency, pass `--if-match
+<rev>` (accepts `7` or `rev-7`) to fail with HTTP 412 on conflict. `kata meta
+unset` clears a key (null merge-patch). `kata meta get` prints the whole
+metadata object or one key, and honors the global `--json` and `--agent`
+flags.
+
+See the [metadata conventions](metadata.md) for standard `work.*` keys.
+
+## Coordination and wait
+
+```sh
+kata wait <ref> [<ref>...] [--until closed|attention|needs-human|stuck] \
+  [--timeout <dur>] [--any|--all] [--poll-interval <dur>]
+```
+
+`kata wait` is a read-only blocking wait. It defaults to `--until closed` and
+`--all` (waiting for every ref). In attention modes, a closed issue also
+completes the wait. A timeout exits with a dedicated nonzero code.
 
 ## Ready work
 
