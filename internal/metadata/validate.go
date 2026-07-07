@@ -16,10 +16,6 @@ var ErrInvalidValue = errors.New("invalid value")
 // reULID matches a 26-character Crockford base32 ULID.
 var reULID = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
 
-// Validate checks raw against the validator for key, if any. Reserved keys
-// (those present in registry) go through their type-specific validator; any
-// other key is accepted as an opaque pass-through value and Validate returns
-// nil. A JSON null value is always accepted and signals "clear this key".
 // ValidateCreateValue validates raw as a metadata value supplied at creation
 // time. Unlike Validate — which accepts a JSON null as "clear this key" — an
 // empty or null value is rejected here: at creation there is nothing to clear,
@@ -35,6 +31,10 @@ func ValidateCreateValue(registry map[string]Entry, key string, raw json.RawMess
 	return Validate(registry, key, raw)
 }
 
+// Validate checks raw against the validator for key, if any. Reserved keys
+// (those present in registry) go through their type-specific validator; any
+// other key is accepted as an opaque pass-through value and Validate returns
+// nil. A JSON null value is always accepted and signals "clear this key".
 func Validate(registry map[string]Entry, key string, raw json.RawMessage) error {
 	entry, ok := registry[key]
 	if !ok {
