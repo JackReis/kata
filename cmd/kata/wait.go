@@ -229,6 +229,16 @@ func runWait(cmd *cobra.Command, args []string, opts waitOptions) error {
 			ExitCode: ExitValidation,
 		}
 	}
+	if opts.timeout < 0 {
+		// A negative timeout would otherwise pass the poll loop's
+		// `timeout > 0` deadline gate and be silently treated like 0 (wait
+		// forever); reject it so a typo like --timeout=-1s fails fast.
+		return &cliError{
+			Message:  "--timeout must not be negative (0 = wait forever)",
+			Kind:     kindValidation,
+			ExitCode: ExitValidation,
+		}
+	}
 	anyMode := opts.anyMode // --all is the default when neither is set
 
 	ctx := cmd.Context()

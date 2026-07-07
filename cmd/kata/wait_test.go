@@ -292,6 +292,17 @@ func TestWaitUsageZeroPollInterval(t *testing.T) {
 	_ = requireCLIError(t, err, ExitValidation)
 }
 
+// TestWaitUsageNegativeTimeout: a negative --timeout must be rejected, not
+// silently treated like 0 (wait forever) because the poll loop only arms a
+// deadline when timeout > 0. A typo like --timeout=-1s must fail fast.
+func TestWaitUsageNegativeTimeout(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	ref := createIssue(t, env, pid, "bad timeout")
+
+	_, err := runCLICapture(t, env, dir, "wait", ref, "--timeout", "-1s")
+	_ = requireCLIError(t, err, ExitValidation)
+}
+
 func TestWaitBadRefFailsFast(t *testing.T) {
 	env, dir, _ := setupCLIWorkspace(t)
 
