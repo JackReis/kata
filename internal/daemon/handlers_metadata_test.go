@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,6 +105,34 @@ func TestPatchMetadata_HappyPath_200(t *testing.T) {
 			assert.Equal(t, rev+1, newRev)
 			assert.Contains(t, metadata, c.expect)
 			assert.Contains(t, string(raw), `"changed":true`)
+		})
+	}
+}
+
+// TestPatchMetadata_PresentEmptyIfMatch_400 pins that a present-but-empty
+// If-Match header is treated as a malformed conditional write, not as an
+// absent header. Huma's typed binding reads headers via Header.Get, which
+// collapses absent and present-empty to "", so an empty conditional would
+// otherwise be silently downgraded to an unconditional last-write-wins patch.
+// It must be rejected with the standard 400 validation error instead.
+func TestPatchMetadata_PresentEmptyIfMatch_400(t *testing.T) {
+	for _, subject := range metadataSubjects() {
+		t.Run(subject.name, func(t *testing.T) {
+			env := testenv.New(t, testenv.WithAuthToken("tok"))
+			url, _ := subject.setup(t, env)
+
+			req, err := http.NewRequest(http.MethodPost, url,
+				strings.NewReader(`{"actor":"tester","patch":{}}`))
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer tok")
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("If-Match", "") // present but empty
+			resp, err := env.HTTP.Do(req)  //nolint:gosec // G704: test server URL.
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+
+			body, _ := io.ReadAll(resp.Body)
+			require.Equalf(t, http.StatusBadRequest, resp.StatusCode, "body: %s", body)
 		})
 	}
 }
