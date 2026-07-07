@@ -322,10 +322,17 @@ func runWait(cmd *cobra.Command, args []string, opts waitOptions) error {
 	timedOut := !waitComplete(targets, anyMode)
 
 	if reporter.mode == outputJSON {
+		// pending is documented as timeout-only: on a successful join (notably
+		// --any, where later refs are intentionally never satisfied) it must be
+		// empty so the result does not read as incomplete.
+		pending := []string{}
+		if timedOut {
+			pending = pendingRefs(targets)
+		}
 		out := waitJSONOutput{
 			Results:   collectResults(targets),
 			TimedOut:  timedOut,
-			Pending:   pendingRefs(targets),
+			Pending:   pending,
 			Abandoned: collectAbandoned(targets),
 		}
 		var buf bytes.Buffer

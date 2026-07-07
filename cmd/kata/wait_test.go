@@ -514,6 +514,34 @@ func TestWaitAnyAbandonedRefAppearsInJSON(t *testing.T) {
 	assert.Equal(t, "error", obj.Abandoned[0].Reason)
 }
 
+// TestWaitAnyJSONSuccessLeavesPendingEmpty: a successful --any --json wait
+// must not report the un-needed second ref in `pending`. `pending` is
+// documented as timeout-only (refs still unmet when the wait times out); on a
+// successful join it must be empty so the result does not look incomplete.
+func TestWaitAnyJSONSuccessLeavesPendingEmpty(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	ref1 := createIssue(t, env, pid, "closes first json any")
+	ref2 := createIssue(t, env, pid, "never satisfied json any")
+
+	errc := make(chan error, 1)
+	go func() {
+		time.Sleep(waitMutDelay)
+		errc <- closeIssueHTTP(env, pid, ref1)
+	}()
+
+	stdout, _, err := runCLIWithErr(t, env, dir,
+		"--json", "wait", ref1, ref2, "--any", "--poll-interval", waitFastPoll, "--timeout", waitSafetyNet)
+	require.NoError(t, <-errc)
+	require.NoError(t, err)
+
+	obj := parseWaitJSON(t, stdout)
+	assert.False(t, obj.TimedOut)
+	require.Len(t, obj.Results, 1)
+	assert.Equal(t, ref1, obj.Results[0].Ref)
+	assert.Empty(t, obj.Pending,
+		"a successful --any wait must not list the un-needed ref as pending")
+}
+
 // TestWaitAnyAllRefsDeletedReturnsFirstError: when every ref is deleted
 // mid-wait in --any mode, the wait returns the first permanent error rather
 // than spinning forever.
