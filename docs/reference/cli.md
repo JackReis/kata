@@ -216,14 +216,14 @@ issue is already owned by someone else unless `--force` is used.
 
 ```sh
 kata meta set <ref> <key> <value> [--json-value] [--if-match <rev>]
-kata meta unset <ref> <key>
+kata meta unset <ref> <key> [--if-match <rev>]
 kata meta get <ref> [key]
 ```
 
 `kata meta set` stores the value as a JSON string by default; `--json-value`
 treats the value as raw JSON. For optimistic concurrency, pass `--if-match
-<rev>` (accepts `7` or `rev-7`) to fail with HTTP 412 on conflict. `kata meta
-unset` clears a key (null merge-patch). `kata meta get` prints the whole
+<rev>` (accepts `7` or `rev-7`) to fail with HTTP 412 on conflict; `unset`
+takes the same guard. `kata meta unset` clears a key (null merge-patch). `kata meta get` prints the whole
 metadata object or one key, and honors the global `--json` and `--agent`
 flags.
 
