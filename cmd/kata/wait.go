@@ -604,8 +604,13 @@ func (r *waitReporter) reportAbandoned(t *waitTarget) error {
 	case outputJSON:
 		return nil
 	case outputAgent:
+		// An abandoned ref is not a command failure: in --any the wait can
+		// still succeed on another ref. The agent contract reserves ERR (on
+		// stderr, nonzero exit) for final command failure, so stream this as a
+		// non-error OK row keyed by reason=abandoned. A genuine all-abandoned
+		// failure is surfaced separately by the top-level error handler.
 		var b strings.Builder
-		fmt.Fprintf(&b, "ERR wait %s reason=error", agentValue(t.arg))
+		fmt.Fprintf(&b, "OK wait %s reason=abandoned", agentValue(t.arg))
 		if msg != "" {
 			fmt.Fprintf(&b, " message=%s", agentValue(msg))
 		}

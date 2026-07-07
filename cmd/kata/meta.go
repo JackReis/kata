@@ -382,8 +382,12 @@ func printMetaValue(cmd *cobra.Command, key string, value json.RawMessage, issue
 }
 
 func writeMetaAgentRow(cmd *cobra.Command, key string, value json.RawMessage) error {
-	_, err := fmt.Fprintf(cmd.OutOrStdout(), "- key=%s value=%s\n", agentValue(key), textsafe.Line(string(value)))
-	return err
+	// Route both fields through agent quoting so a JSON value containing
+	// spaces, quotes, or backslashes stays a single unambiguous token that a
+	// whitespace-splitting agent parser cannot break apart.
+	return writeAgentKVRow(cmd.OutOrStdout(),
+		agentRowField("key", key),
+		agentRowField("value", string(value)))
 }
 
 func sortedMetaKeys(values map[string]json.RawMessage) []string {

@@ -405,6 +405,39 @@ func TestWaitAnyAbandonsDeletedRefCompletesOnOther(t *testing.T) {
 	assert.Contains(t, stdout, "error")
 }
 
+// TestWaitAnyAbandonedAgentUsesNonErrorRow: in --agent --any mode a ref
+// abandoned mid-wait must not emit an ERR line (the agent contract reserves
+// ERR for command failure) when the overall command later succeeds on another
+// ref. The abandoned ref is surfaced as a non-error row instead.
+func TestWaitAnyAbandonedAgentUsesNonErrorRow(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	ref1 := createIssue(t, env, pid, "abandoned agent ref")
+	ref2 := createIssue(t, env, pid, "closes later agent")
+
+	errc := make(chan error, 2)
+	go func() {
+		time.Sleep(waitMutDelay)
+		errc <- deleteIssueHTTP(env, pid, ref1)
+		time.Sleep(waitMutDelay)
+		errc <- closeIssueHTTP(env, pid, ref2)
+	}()
+
+	stdout, _, err := runCLIWithErr(t, env, dir,
+		"--agent", "wait", ref1, ref2, "--any", "--poll-interval", waitFastPoll, "--timeout", waitSafetyNet)
+	require.NoError(t, <-errc)
+	require.NoError(t, <-errc)
+	require.NoError(t, err)
+
+	// Command succeeded, so no streamed line may carry the ERR failure prefix.
+	assert.NotContains(t, stdout, "ERR ")
+	// The completed ref is a normal OK completion row.
+	assert.Contains(t, stdout, "reason=closed")
+	assert.Contains(t, stdout, ref2)
+	// The abandoned ref is surfaced as a non-error row keyed by reason.
+	assert.Contains(t, stdout, "reason=abandoned")
+	assert.Contains(t, stdout, ref1)
+}
+
 // TestWaitAnyAbandonedRefAppearsInJSON: the --json payload carries an
 // abandoned ref in its own per-ref list (not in results or pending).
 func TestWaitAnyAbandonedRefAppearsInJSON(t *testing.T) {

@@ -128,7 +128,23 @@ func TestMetaSetAndGetAgentOutput(t *testing.T) {
 	getOut := runCLI(t, env, dir, "--agent", "meta", "get", ref)
 	assert.Contains(t, getOut, "OK meta get")
 	assert.Contains(t, getOut, "key=work.attention")
-	assert.Contains(t, getOut, `value="stuck"`)
+	assert.Contains(t, getOut, `value="\"stuck\""`)
+}
+
+// TestMetaGetAgentQuotesValueWithSpaces: a metadata value containing spaces
+// must be emitted as a single agent-quoted token so a whitespace-splitting
+// parser cannot break the value= field apart. textsafe.Line alone leaves the
+// space bare; agent quoting wraps the whole JSON value.
+func TestMetaGetAgentQuotesValueWithSpaces(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	ref := createIssue(t, env, pid, "agent metadata spaces")
+
+	runCLI(t, env, dir, "meta", "set", ref, "work.note", "hello world")
+
+	getOut := runCLI(t, env, dir, "--agent", "meta", "get", ref)
+	assert.Contains(t, getOut, "OK meta get")
+	assert.Contains(t, getOut, "key=work.note")
+	assert.Contains(t, getOut, `value="\"hello world\""`)
 }
 
 func TestMetaSetAndGetJSONOutput(t *testing.T) {
