@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -301,6 +302,39 @@ func TestWaitUsageNegativeTimeout(t *testing.T) {
 
 	_, err := runCLICapture(t, env, dir, "wait", ref, "--timeout", "-1s")
 	_ = requireCLIError(t, err, ExitValidation)
+}
+
+// TestWaitTimeoutBoundsHungFetch: a daemon state fetch that never returns must
+// be bounded by --timeout. Ref resolution answers immediately, but the issue
+// GET hangs; the command must still return an ExitWaitTimeout well before the
+// server's hard cap rather than blocking on the stuck request.
+func TestWaitTimeoutBoundsHungFetch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/projects/resolve":
+			_, _ = w.Write([]byte(`{"project":{"id":1,"name":"kata"}}`))
+		case strings.HasPrefix(r.URL.Path, "/api/v1/projects/1/issues/"):
+			// Hang until the client cancels (its deadline) or a hard cap that
+			// only trips if the fetch was never bounded.
+			select {
+			case <-r.Context().Done():
+			case <-time.After(5 * time.Second):
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	resetFlags(t)
+	start := time.Now()
+	_, _, err := executeRootCapture(t, contextWithBaseURL(context.Background(), srv.URL),
+		"wait", "kata#abcd", "--timeout", "300ms", "--poll-interval", "50ms")
+	elapsed := time.Since(start)
+
+	_ = requireCLIError(t, err, ExitWaitTimeout)
+	assert.Less(t, elapsed, 2*time.Second,
+		"a hung daemon fetch must be bounded by --timeout, not block on the stuck request")
 }
 
 func TestWaitBadRefFailsFast(t *testing.T) {

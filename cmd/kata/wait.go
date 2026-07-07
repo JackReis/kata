@@ -261,6 +261,17 @@ func runWait(cmd *cobra.Command, args []string, opts waitOptions) error {
 	reporter := &waitReporter{mode: currentOutputMode(), w: cmd.OutOrStdout()}
 	start := time.Now()
 
+	// Bound every state fetch by the wait deadline so a hung daemon request
+	// cannot block past --timeout. Ref resolution above already ran against the
+	// unbounded context; this caps only the polling GETs. Cancellation (Ctrl-C)
+	// still flows through the parent ctx used for the poll loop's sleep.
+	fetchCtx := ctx
+	if opts.timeout > 0 {
+		var cancel context.CancelFunc
+		fetchCtx, cancel = context.WithDeadline(ctx, start.Add(opts.timeout))
+		defer cancel()
+	}
+
 	// Initial pass: fail fast only on a permanent (4xx) unresolvable ref
 	// (listing which), and complete refs whose condition already holds at
 	// start. A transient error (transport failure, daemon 5xx) is NOT a bad
@@ -270,7 +281,7 @@ func runWait(cmd *cobra.Command, args []string, opts waitOptions) error {
 	var firstFetchErr error
 	var badRefs []string
 	for _, t := range targets {
-		st, msg, ferr := waitFetchState(ctx, client, baseURL, t)
+		st, msg, ferr := waitFetchState(fetchCtx, client, baseURL, t)
 		if ferr != nil {
 			if classifyFetchErr(ferr) {
 				if firstFetchErr == nil {
@@ -304,7 +315,7 @@ func runWait(cmd *cobra.Command, args []string, opts waitOptions) error {
 		}
 	}
 
-	if err := waitPollLoop(ctx, client, baseURL, mode, opts, anyMode, start, targets, reporter); err != nil {
+	if err := waitPollLoop(ctx, fetchCtx, client, baseURL, mode, opts, anyMode, start, targets, reporter); err != nil {
 		return err
 	}
 
@@ -342,8 +353,11 @@ func runWait(cmd *cobra.Command, args []string, opts waitOptions) error {
 // cancelled. It returns an error only for a hard failure (context cancellation
 // or a ref that has failed too many consecutive fetches); timeout is signalled
 // to the caller via the targets' completion state, not an error here.
+// ctx carries cancellation (Ctrl-C) for the inter-poll sleep; fetchCtx bounds
+// each state GET by the wait deadline so a hung request cannot outlast --timeout.
 func waitPollLoop(
 	ctx context.Context,
+	fetchCtx context.Context,
 	client *http.Client,
 	baseURL string,
 	mode waitMode,
@@ -374,11 +388,17 @@ func waitPollLoop(
 			case <-time.After(sleep):
 			}
 		}
+		// Re-check the deadline before fetching: the sleep above is clamped to
+		// land on the deadline, so without this a whole extra poll pass would
+		// fire after --timeout had already elapsed.
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			return nil // timed out during the sleep
+		}
 		for _, t := range targets {
 			if t.done || t.abandoned {
 				continue
 			}
-			st, msg, err := waitFetchState(ctx, client, baseURL, t)
+			st, msg, err := waitFetchState(fetchCtx, client, baseURL, t)
 			if err != nil {
 				if classifyFetchErr(err) {
 					// Permanent daemon error (e.g. a deleted issue's 404).
