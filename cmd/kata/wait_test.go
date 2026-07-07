@@ -269,6 +269,57 @@ func TestWaitBadRefFailsFast(t *testing.T) {
 	assert.Less(t, time.Since(start), 2*time.Second, "bad ref must fail before entering the poll loop")
 }
 
+func TestWaitAnySucceedsWhenOtherRefAlreadySatisfiedBadRefLast(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	ref := createIssue(t, env, pid, "already closed, bad ref last")
+	require.NoError(t, closeIssueHTTP(env, pid, ref))
+
+	start := time.Now()
+	stdout, _, err := runCLIWithErr(t, env, dir,
+		"wait", ref, "zzzz", "--any", "--poll-interval", waitFastPoll, "--timeout", waitSafetyNet)
+	require.NoError(t, err)
+	assert.Less(t, time.Since(start), 2*time.Second, "already-satisfied --any join should not enter the poll loop")
+	assert.Contains(t, stdout, ref)
+	assert.Contains(t, stdout, "closed")
+}
+
+func TestWaitAnySucceedsWhenOtherRefAlreadySatisfiedBadRefFirst(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	ref := createIssue(t, env, pid, "already closed, bad ref first")
+	require.NoError(t, closeIssueHTTP(env, pid, ref))
+
+	start := time.Now()
+	stdout, _, err := runCLIWithErr(t, env, dir,
+		"wait", "zzzz", ref, "--any", "--poll-interval", waitFastPoll, "--timeout", waitSafetyNet)
+	require.NoError(t, err)
+	assert.Less(t, time.Since(start), 2*time.Second, "already-satisfied --any join should not enter the poll loop")
+	assert.Contains(t, stdout, ref)
+	assert.Contains(t, stdout, "closed")
+}
+
+func TestWaitAnyStillFailsFastOnBadRefWhenJoinUnsatisfied(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	ref := createIssue(t, env, pid, "still open, never closes")
+
+	start := time.Now()
+	_, err := runCLICapture(t, env, dir,
+		"wait", ref, "zzzz", "--any", "--poll-interval", waitFastPoll, "--timeout", waitSafetyNet)
+	require.Error(t, err)
+	requireCLIError(t, err, ExitNotFound)
+	assert.Less(t, time.Since(start), 2*time.Second, "bad ref must fail before entering the poll loop")
+}
+
+func TestWaitAllStillFailsOnBadRefEvenWhenOtherRefAlreadySatisfied(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	ref := createIssue(t, env, pid, "already closed, but --all with bad ref")
+	require.NoError(t, closeIssueHTTP(env, pid, ref))
+
+	_, err := runCLICapture(t, env, dir,
+		"wait", ref, "zzzz", "--all", "--poll-interval", waitFastPoll, "--timeout", waitSafetyNet)
+	require.Error(t, err)
+	requireCLIError(t, err, ExitNotFound)
+}
+
 func TestWaitAgentOutput(t *testing.T) {
 	env, dir, pid := setupCLIWorkspace(t)
 	ref := createIssue(t, env, pid, "agent output")

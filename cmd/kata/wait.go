@@ -251,10 +251,15 @@ func runWait(cmd *cobra.Command, args []string, opts waitOptions) error {
 			}
 		}
 	}
-	if len(badRefs) == 1 {
-		return firstFetchErr // preserve the daemon-derived exit code (e.g. 404)
-	}
-	if len(badRefs) > 1 {
+	// In --any mode, a ref that already satisfied the join during this same
+	// pass means the wait has fired: report success and ignore any bad refs
+	// rather than failing on them. --all is unaffected (any bad ref still
+	// fails fast); in --any, bad refs still fail fast when the join is not
+	// yet satisfied.
+	if len(badRefs) > 0 && !(anyMode && waitComplete(targets, anyMode)) {
+		if len(badRefs) == 1 {
+			return firstFetchErr // preserve the daemon-derived exit code (e.g. 404)
+		}
 		return &cliError{
 			Message:  "cannot resolve refs: " + strings.Join(badRefs, ", "),
 			Kind:     kindNotFound,
