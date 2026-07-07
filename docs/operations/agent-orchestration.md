@@ -80,8 +80,8 @@ state, raise `needs-human` so the issue does not silently go quiet:
 
 ```sh
 # runs when the agent session stops or goes idle
-current=$(kata meta get "$KATA_REF" work.attention --json)
-if [ "$current" = '"ok"' ]; then
+current=$(kata meta get "$KATA_REF" work.attention --json | jq -r '.value')
+if [ "$current" = "ok" ]; then
   kata meta set "$KATA_REF" work.attention needs-human
   kata meta set "$KATA_REF" work.attention_msg "session ended without hand-off"
 fi
@@ -147,7 +147,7 @@ Merge automation reads `work.branch` to know what to integrate, verifies the
 work, and closes the tracking issue with typed evidence:
 
 ```sh
-branch=$(kata meta get abc4 work.branch --json)   # "agent/widget-export"
+branch=$(kata meta get abc4 work.branch --json | jq -r '.value')   # "agent/widget-export"
 # ... merge and verify the branch ...
 kata close abc4 --done \
   --message "Merged widget export; export round-trips and unit tests pass." \

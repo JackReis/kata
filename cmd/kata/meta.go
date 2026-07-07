@@ -46,14 +46,17 @@ func newMetaSetCmd() *cobra.Command {
 }
 
 func newMetaUnsetCmd() *cobra.Command {
-	return &cobra.Command{
+	var ifMatch string
+	cmd := &cobra.Command{
 		Use:   "unset <ref> <key>",
 		Short: "clear issue metadata",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runMetaPatch(cmd, args[0], args[1], json.RawMessage("null"), "", "unset")
+			return runMetaPatch(cmd, args[0], args[1], json.RawMessage("null"), ifMatch, "unset")
 		},
 	}
+	cmd.Flags().StringVar(&ifMatch, "if-match", "", "expected issue revision (N or rev-N)")
+	return cmd
 }
 
 func newMetaGetCmd() *cobra.Command {
@@ -96,6 +99,25 @@ type metaShowResponse struct {
 type metaPatchResponse struct {
 	Issue   metaIssueWire `json:"issue"`
 	Changed bool          `json:"changed"`
+}
+
+// metaGetWholeJSON is the CLI-composed --json envelope for `kata meta get
+// <ref>` (no key given). It mirrors the daemon's kata_api_version envelope
+// convention (see helpers.go: emitJSON) even though this payload is
+// assembled client-side rather than re-emitted from a daemon response body.
+type metaGetWholeJSON struct {
+	Ref      string                     `json:"ref"`
+	Revision int64                      `json:"revision"`
+	Metadata map[string]json.RawMessage `json:"metadata"`
+}
+
+// metaGetKeyJSON is the CLI-composed --json envelope for `kata meta get
+// <ref> <key>`.
+type metaGetKeyJSON struct {
+	Ref      string          `json:"ref"`
+	Revision int64           `json:"revision"`
+	Key      string          `json:"key"`
+	Value    json.RawMessage `json:"value"`
 }
 
 func parseMetaSetValue(raw string, asJSON bool) (json.RawMessage, error) {
@@ -282,11 +304,15 @@ func printMetaGet(cmd *cobra.Command, issue metaIssueWire, key string) error {
 		return printMetaValue(cmd, key, value, issue, mode)
 	}
 	if mode == outputJSON {
-		raw, err := marshalCompact(issue.Metadata)
-		if err != nil {
+		var buf bytes.Buffer
+		if err := emitJSON(&buf, metaGetWholeJSON{
+			Ref:      issue.ShortID,
+			Revision: issue.Revision,
+			Metadata: issue.Metadata,
+		}); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), string(raw))
+		_, err := fmt.Fprint(cmd.OutOrStdout(), buf.String())
 		return err
 	}
 	if mode == outputAgent {
@@ -320,7 +346,16 @@ func printMetaGet(cmd *cobra.Command, issue metaIssueWire, key string) error {
 func printMetaValue(cmd *cobra.Command, key string, value json.RawMessage, issue metaIssueWire, mode outputMode) error {
 	compact := compactRaw(value)
 	if mode == outputJSON {
-		_, err := fmt.Fprintln(cmd.OutOrStdout(), string(compact))
+		var buf bytes.Buffer
+		if err := emitJSON(&buf, metaGetKeyJSON{
+			Ref:      issue.ShortID,
+			Revision: issue.Revision,
+			Key:      key,
+			Value:    compact,
+		}); err != nil {
+			return err
+		}
+		_, err := fmt.Fprint(cmd.OutOrStdout(), buf.String())
 		return err
 	}
 	if mode == outputAgent {
@@ -359,16 +394,4 @@ func compactRaw(raw json.RawMessage) json.RawMessage {
 		return raw
 	}
 	return json.RawMessage(buf.Bytes())
-}
-
-func marshalCompact(v any) ([]byte, error) {
-	bs, err := json.Marshal(v)
-	if err != nil {
-		return nil, err
-	}
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, bs); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }

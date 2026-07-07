@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -37,7 +38,9 @@ func TestMetaSetJSONValueObjectRoundTrips(t *testing.T) {
 	require.JSONEq(t, `{"work.state":{"attention":"ok","count":2}}`, string(issue.Issue.Metadata))
 
 	out := runCLI(t, env, dir, "meta", "get", "--json", ref, "work.state")
-	assert.JSONEq(t, `{"attention":"ok","count":2}`, out)
+	assert.JSONEq(t, fmt.Sprintf(
+		`{"kata_api_version":1,"ref":%q,"revision":2,"key":"work.state","value":{"attention":"ok","count":2}}`,
+		ref), out)
 }
 
 func TestMetaSetJSONValueRejectsInvalidJSONClientSide(t *testing.T) {
@@ -139,7 +142,32 @@ func TestMetaSetAndGetJSONOutput(t *testing.T) {
 	assert.Contains(t, string(setPayload["issue"]), `"revision":2`)
 
 	getOut := runCLI(t, env, dir, "--json", "meta", "get", ref)
-	assert.JSONEq(t, `{"work.attention":"ok"}`, getOut)
+	assert.JSONEq(t, fmt.Sprintf(
+		`{"kata_api_version":1,"ref":%q,"revision":2,"metadata":{"work.attention":"ok"}}`,
+		ref), getOut)
+}
+
+func TestMetaUnsetIfMatchStaleRevisionConflictsAndCorrectRevisionSucceeds(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	ref := createIssue(t, env, pid, "if match unset metadata issue")
+
+	runCLI(t, env, dir, "meta", "set", ref, "work.branch", "feature/example")
+
+	_, stderr, err := runCLIWithErr(t, env, dir, "meta", "unset", "--if-match", "rev-99", ref, "work.branch")
+	ce := requireCLIError(t, err, ExitConfirm)
+	assert.Equal(t, kindConfirm, ce.Kind)
+	assert.Contains(t, stderr, "revision conflict")
+
+	issue := fetchMetaIssueViaHTTP(t, env, pid, ref)
+	require.JSONEq(t, `{"work.branch":"feature/example"}`, string(issue.Issue.Metadata))
+
+	out := runCLI(t, env, dir, "meta", "unset", "--if-match", "2", ref, "work.branch")
+	assert.Contains(t, out, "unset")
+	assert.Contains(t, out, "work.branch")
+	assert.Contains(t, out, "rev-3")
+
+	issue = fetchMetaIssueViaHTTP(t, env, pid, ref)
+	assert.JSONEq(t, `{}`, string(issue.Issue.Metadata))
 }
 
 type metaIssueResponse struct {

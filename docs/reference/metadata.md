@@ -79,10 +79,12 @@ kata meta set abc4 work.attention needs-human --if-match rev-7
 kata meta unset <ref> <key>
 ```
 
-Sends a `null` merge patch, clearing the key.
+Sends a `null` merge patch, clearing the key. Accepts `--if-match <rev>` for
+optimistic concurrency, same as `kata meta set`.
 
 ```sh
 kata meta unset abc4 work.attention_msg
+kata meta unset abc4 work.attention_msg --if-match rev-7
 ```
 
 ### `kata meta get`
