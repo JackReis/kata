@@ -256,7 +256,7 @@ func runWait(cmd *cobra.Command, args []string, opts waitOptions) error {
 	// rather than failing on them. --all is unaffected (any bad ref still
 	// fails fast); in --any, bad refs still fail fast when the join is not
 	// yet satisfied.
-	if len(badRefs) > 0 && !(anyMode && waitComplete(targets, anyMode)) {
+	if len(badRefs) > 0 && (!anyMode || !waitComplete(targets, anyMode)) {
 		if len(badRefs) == 1 {
 			return firstFetchErr // preserve the daemon-derived exit code (e.g. 404)
 		}

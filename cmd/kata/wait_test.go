@@ -56,7 +56,7 @@ func TestWaitEvalCondition(t *testing.T) {
 func TestWaitParseModeRejectsUnknown(t *testing.T) {
 	_, err := parseWaitMode("banana")
 	require.Error(t, err)
-	requireCLIError(t, err, ExitValidation)
+	_ = requireCLIError(t, err, ExitValidation)
 
 	for _, ok := range []string{"closed", "attention", "needs-human", "stuck"} {
 		m, err := parseWaitMode(ok)
@@ -223,7 +223,7 @@ func TestWaitTimeoutReportsPendingAndExitCode(t *testing.T) {
 
 	_, stderr, err := runCLIWithErr(t, env, dir,
 		"wait", ref, "--poll-interval", waitFastPoll, "--timeout", "200ms")
-	requireCLIError(t, err, ExitWaitTimeout)
+	_ = requireCLIError(t, err, ExitWaitTimeout)
 	assert.Contains(t, stderr, "pending")
 	assert.Contains(t, stderr, ref)
 }
@@ -234,7 +234,7 @@ func TestWaitTimeoutJSONEmitsObject(t *testing.T) {
 
 	stdout, _, err := runCLIWithErr(t, env, dir,
 		"--json", "wait", ref, "--poll-interval", waitFastPoll, "--timeout", "200ms")
-	requireCLIError(t, err, ExitWaitTimeout)
+	_ = requireCLIError(t, err, ExitWaitTimeout)
 
 	obj := parseWaitJSON(t, stdout)
 	assert.True(t, obj.TimedOut)
@@ -247,7 +247,7 @@ func TestWaitUsageAnyAllConflict(t *testing.T) {
 	ref := createIssue(t, env, pid, "conflict")
 
 	_, err := runCLICapture(t, env, dir, "wait", ref, "--any", "--all")
-	requireCLIError(t, err, ExitUsage)
+	_ = requireCLIError(t, err, ExitUsage)
 }
 
 func TestWaitUsageZeroPollInterval(t *testing.T) {
@@ -255,7 +255,7 @@ func TestWaitUsageZeroPollInterval(t *testing.T) {
 	ref := createIssue(t, env, pid, "bad poll")
 
 	_, err := runCLICapture(t, env, dir, "wait", ref, "--poll-interval", "0s")
-	requireCLIError(t, err, ExitValidation)
+	_ = requireCLIError(t, err, ExitValidation)
 }
 
 func TestWaitBadRefFailsFast(t *testing.T) {
@@ -265,7 +265,7 @@ func TestWaitBadRefFailsFast(t *testing.T) {
 	_, err := runCLICapture(t, env, dir,
 		"wait", "zzzz", "--poll-interval", waitFastPoll, "--timeout", waitSafetyNet)
 	require.Error(t, err)
-	requireCLIError(t, err, ExitNotFound)
+	_ = requireCLIError(t, err, ExitNotFound)
 	assert.Less(t, time.Since(start), 2*time.Second, "bad ref must fail before entering the poll loop")
 }
 
@@ -305,7 +305,7 @@ func TestWaitAnyStillFailsFastOnBadRefWhenJoinUnsatisfied(t *testing.T) {
 	_, err := runCLICapture(t, env, dir,
 		"wait", ref, "zzzz", "--any", "--poll-interval", waitFastPoll, "--timeout", waitSafetyNet)
 	require.Error(t, err)
-	requireCLIError(t, err, ExitNotFound)
+	_ = requireCLIError(t, err, ExitNotFound)
 	assert.Less(t, time.Since(start), 2*time.Second, "bad ref must fail before entering the poll loop")
 }
 
@@ -317,7 +317,7 @@ func TestWaitAllStillFailsOnBadRefEvenWhenOtherRefAlreadySatisfied(t *testing.T)
 	_, err := runCLICapture(t, env, dir,
 		"wait", ref, "zzzz", "--all", "--poll-interval", waitFastPoll, "--timeout", waitSafetyNet)
 	require.Error(t, err)
-	requireCLIError(t, err, ExitNotFound)
+	_ = requireCLIError(t, err, ExitNotFound)
 }
 
 func TestWaitAgentOutput(t *testing.T) {

@@ -35,7 +35,7 @@ func TestCreate_MetaMissingEqualsIsUsageError(t *testing.T) {
 	env, dir, _ := setupCLIWorkspace(t)
 	_, err := runCLICapture(t, env, dir, "create", "bad meta", "--meta", "noequals")
 	require.Error(t, err)
-	requireCLIError(t, err, ExitUsage)
+	_ = requireCLIError(t, err, ExitUsage)
 }
 
 // TestList_MetaFilterEquality pins `kata list --meta key=value`.
