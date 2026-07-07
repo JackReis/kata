@@ -89,6 +89,12 @@ func patchIssueMetadataHandler(cfg ServerConfig) func(context.Context, *api.Patc
 		if res.Changed {
 			ev := res.Event
 			out.Body.Event = &ev
+			// Wake SSE followers (kata events --tail) and hook consumers on
+			// the persisted issue.metadata_updated event. Only broadcast when
+			// the patch actually changed something — a no-op patch persists no
+			// event and must not spuriously wake subscribers.
+			cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: &ev, ProjectID: in.ProjectID})
+			cfg.Hooks.Enqueue(ev)
 		}
 		return out, nil
 	}
@@ -134,6 +140,10 @@ func patchProjectMetadataHandler(cfg ServerConfig) func(context.Context, *api.Pa
 		if res.Changed {
 			ev := res.Event
 			out.Body.Event = &ev
+			// Wake SSE followers and hook consumers on the persisted
+			// project.metadata_updated event. No broadcast on a no-op patch.
+			cfg.Broadcaster.Broadcast(StreamMsg{Kind: "event", Event: &ev, ProjectID: in.ProjectID})
+			cfg.Hooks.Enqueue(ev)
 		}
 		return out, nil
 	}

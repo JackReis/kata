@@ -71,55 +71,94 @@ func TestCreateIssue_RejectsNullMetadata(t *testing.T) {
 	assertAPIError(t, resp.StatusCode, bs, http.StatusBadRequest, "invalid_metadata_value")
 }
 
-// TestCreateIssue_IdempotentReplayIgnoresMetadata pins that when an
-// Idempotency-Key replays and returns the existing issue, metadata from the
-// replayed request is ignored.
-func TestCreateIssue_IdempotentReplayIgnoresMetadata(t *testing.T) {
-	env := testenv.New(t)
-	projectID := mkProject(t, env, "github.com/test/a", "a")
+// TestCreateIssue_IdempotencyFoldsMetadata pins that create-time metadata is
+// part of the idempotency fingerprint now that create persists it:
+//   - same key + same metadata → reuse (no new issue).
+//   - same key + different metadata → 409 idempotency_mismatch.
+//   - same key + no metadata on either request → reuse (unchanged from before
+//     metadata joined the fingerprint).
+func TestCreateIssue_IdempotencyFoldsMetadata(t *testing.T) {
+	post := func(t *testing.T, env *testenv.Env, projectID int64, key string, body map[string]any) (*http.Response, []byte) {
+		return envDoRaw(t, env, http.MethodPost, projectPath(projectID)+"/issues", body,
+			map[string]string{"Idempotency-Key": key})
+	}
 
-	first := map[string]any{
-		"actor": "tester",
-		"title": "idem",
-		"metadata": map[string]json.RawMessage{
-			"work.branch": json.RawMessage(`"original"`),
-		},
-	}
-	var out1 struct {
-		Issue db.Issue `json:"issue"`
-	}
-	// Send with an Idempotency-Key header.
-	resp1, bs1 := envDoRaw(t, env, http.MethodPost, projectPath(projectID)+"/issues", first,
-		map[string]string{"Idempotency-Key": "k1"})
-	require.Equalf(t, http.StatusOK, resp1.StatusCode, "body: %s", string(bs1))
-	require.NoError(t, json.Unmarshal(bs1, &out1))
+	t.Run("same_metadata_reuses", func(t *testing.T) {
+		env := testenv.New(t)
+		projectID := mkProject(t, env, "github.com/test/a", "a")
+		body := map[string]any{
+			"actor": "tester",
+			"title": "idem",
+			"metadata": map[string]json.RawMessage{
+				"work.branch": json.RawMessage(`"feature/x"`),
+			},
+		}
+		var out1 struct {
+			Issue db.Issue `json:"issue"`
+		}
+		resp1, bs1 := post(t, env, projectID, "k1", body)
+		require.Equalf(t, http.StatusOK, resp1.StatusCode, "body: %s", string(bs1))
+		require.NoError(t, json.Unmarshal(bs1, &out1))
 
-	// Replay same key but different metadata — reuse must ignore new metadata.
-	replay := map[string]any{
-		"actor": "tester",
-		"title": "idem",
-		"metadata": map[string]json.RawMessage{
-			"work.branch": json.RawMessage(`"changed"`),
-		},
-	}
-	var out2 struct {
-		Issue   db.Issue `json:"issue"`
-		Reused  bool     `json:"reused"`
-		Changed bool     `json:"changed"`
-	}
-	resp2, bs2 := envDoRaw(t, env, http.MethodPost, projectPath(projectID)+"/issues", replay,
-		map[string]string{"Idempotency-Key": "k1"})
-	require.Equalf(t, http.StatusOK, resp2.StatusCode, "body: %s", string(bs2))
-	require.NoError(t, json.Unmarshal(bs2, &out2))
-	assert.True(t, out2.Reused)
-	assert.Equal(t, out1.Issue.ID, out2.Issue.ID)
+		var out2 struct {
+			Issue  db.Issue `json:"issue"`
+			Reused bool     `json:"reused"`
+		}
+		resp2, bs2 := post(t, env, projectID, "k1", body)
+		require.Equalf(t, http.StatusOK, resp2.StatusCode, "body: %s", string(bs2))
+		require.NoError(t, json.Unmarshal(bs2, &out2))
+		assert.True(t, out2.Reused, "identical metadata must reuse the original issue")
+		assert.Equal(t, out1.Issue.ID, out2.Issue.ID)
+	})
 
-	got, err := env.DB.IssueByID(context.Background(), out1.Issue.ID)
-	require.NoError(t, err)
-	var m map[string]json.RawMessage
-	require.NoError(t, json.Unmarshal([]byte(got.Metadata), &m))
-	assert.JSONEq(t, `"original"`, string(m["work.branch"]),
-		"replayed metadata must be ignored on idempotent reuse")
+	t.Run("different_metadata_conflicts", func(t *testing.T) {
+		env := testenv.New(t)
+		projectID := mkProject(t, env, "github.com/test/a", "a")
+		first := map[string]any{
+			"actor": "tester",
+			"title": "idem",
+			"metadata": map[string]json.RawMessage{
+				"work.branch": json.RawMessage(`"original"`),
+			},
+		}
+		resp1, bs1 := post(t, env, projectID, "k1", first)
+		require.Equalf(t, http.StatusOK, resp1.StatusCode, "body: %s", string(bs1))
+
+		replay := map[string]any{
+			"actor": "tester",
+			"title": "idem",
+			"metadata": map[string]json.RawMessage{
+				"work.branch": json.RawMessage(`"changed"`),
+			},
+		}
+		resp2, bs2 := post(t, env, projectID, "k1", replay)
+		assertAPIError(t, resp2.StatusCode, bs2, http.StatusConflict, "idempotency_mismatch")
+	})
+
+	t.Run("no_metadata_reuses", func(t *testing.T) {
+		env := testenv.New(t)
+		projectID := mkProject(t, env, "github.com/test/a", "a")
+		body := map[string]any{
+			"actor": "tester",
+			"title": "idem",
+		}
+		var out1 struct {
+			Issue db.Issue `json:"issue"`
+		}
+		resp1, bs1 := post(t, env, projectID, "k1", body)
+		require.Equalf(t, http.StatusOK, resp1.StatusCode, "body: %s", string(bs1))
+		require.NoError(t, json.Unmarshal(bs1, &out1))
+
+		var out2 struct {
+			Issue  db.Issue `json:"issue"`
+			Reused bool     `json:"reused"`
+		}
+		resp2, bs2 := post(t, env, projectID, "k1", body)
+		require.Equalf(t, http.StatusOK, resp2.StatusCode, "body: %s", string(bs2))
+		require.NoError(t, json.Unmarshal(bs2, &out2))
+		assert.True(t, out2.Reused, "metadata-free replay must still reuse")
+		assert.Equal(t, out1.Issue.ID, out2.Issue.ID)
+	})
 }
 
 // TestListIssues_MetaQueryFilters pins the meta query param on the per-project

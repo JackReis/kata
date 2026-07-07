@@ -1109,8 +1109,13 @@ func tryIdempotencyMatch(ctx context.Context, cfg ServerConfig, in *api.CreateIs
 	// window. Storing the count alongside the hash on new writes does not
 	// help pre-upgrade entries, so we accept the gap rather than complicate
 	// the storage shape.
-	fp := db.Fingerprint(in.Body.Title, in.Body.Body, in.Body.Owner, in.Body.Labels, links, in.Body.Priority)
-	fpLegacy := db.FingerprintLegacy(in.Body.Title, in.Body.Body, in.Body.Owner, in.Body.Labels, links, in.Body.Priority)
+	// Metadata is part of the identity: create now persists it, so a replay
+	// with the same key but different metadata must surface as a mismatch
+	// (409) rather than silently reusing the original issue. The metadata
+	// section is omitted from the canonical bytes when empty, so metadata-free
+	// requests still match fingerprints stored before this change.
+	fp := db.Fingerprint(in.Body.Title, in.Body.Body, in.Body.Owner, in.Body.Labels, links, in.Body.Priority, in.Body.Metadata)
+	fpLegacy := db.FingerprintLegacy(in.Body.Title, in.Body.Body, in.Body.Owner, in.Body.Labels, links, in.Body.Priority, in.Body.Metadata)
 	since := time.Now().Add(-idempotencyWindow)
 	match, err := cfg.DB.LookupIdempotency(ctx, in.ProjectID, in.IdempotencyKey, since)
 	if err != nil {

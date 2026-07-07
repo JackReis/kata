@@ -6,10 +6,12 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.kenn.io/kata/internal/daemon"
 	"go.kenn.io/kata/internal/db"
 	"go.kenn.io/kata/internal/testenv"
 )
@@ -290,4 +292,62 @@ func TestPatchProjectMetadata_UnknownKey_Accepted(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(stored.Metadata), `"definitely_not_a_key":"yellow"`,
 		"opaque key must survive a fresh DB read")
+}
+
+// TestPatchIssueMetadata_Broadcasts pins that a metadata patch that actually
+// changes something wakes SSE followers: the handler must broadcast the
+// issue.metadata_updated event through cfg.Broadcaster (the same path
+// kata events --tail subscribes to). A no-op patch must NOT broadcast.
+func TestPatchIssueMetadata_Broadcasts(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("tok"))
+	p, iss := seedProjectAndIssue(t, env)
+	sub := env.Broadcaster.Subscribe(daemon.SubFilter{ProjectID: p.ID})
+	defer sub.Unsub()
+
+	url := fmt.Sprintf("%s/api/v1/projects/%d/issues/%s/metadata", env.URL, p.ID, iss.ShortID)
+	resp := doPostWithIfMatch(t, env, url,
+		`{"actor":"tester","patch":{"scheduled_on":"2026-05-20"}}`,
+		fmt.Sprintf(`"rev-%d"`, iss.Revision))
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", readClose(t, resp))
+
+	msg := receiveMsg(t, sub.Ch, time.Second, "issue metadata patch broadcast")
+	require.NotNil(t, msg.Event)
+	assert.Equal(t, "issue.metadata_updated", msg.Event.Type)
+	assert.Equal(t, p.ID, msg.ProjectID)
+
+	// A no-op patch (deleting an absent key) must not broadcast.
+	resp = doPostWithIfMatch(t, env, url,
+		`{"actor":"tester","patch":{"nonexistent_key":null}}`, "")
+	raw := readClose(t, resp)
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "no-op body: %s", raw)
+	assert.Contains(t, string(raw), `"changed":false`, "no-op patch must report changed=false")
+	assertNoReceive(t, sub.Ch, 200*time.Millisecond, "no-op issue metadata patch must not broadcast")
+}
+
+// TestPatchProjectMetadata_Broadcasts is the project-subject mirror: a changing
+// project metadata patch must broadcast project.metadata_updated, and a no-op
+// patch must stay silent.
+func TestPatchProjectMetadata_Broadcasts(t *testing.T) {
+	env := testenv.New(t, testenv.WithAuthToken("tok"))
+	p := seedProject(t, env, "bcast")
+	sub := env.Broadcaster.Subscribe(daemon.SubFilter{ProjectID: p.ID})
+	defer sub.Unsub()
+
+	url := fmt.Sprintf("%s/api/v1/projects/%d/metadata", env.URL, p.ID)
+	resp := doPostWithIfMatch(t, env, url,
+		`{"actor":"tester","patch":{"area":"Work"}}`,
+		fmt.Sprintf(`"rev-%d"`, p.Revision))
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", readClose(t, resp))
+
+	msg := receiveMsg(t, sub.Ch, time.Second, "project metadata patch broadcast")
+	require.NotNil(t, msg.Event)
+	assert.Equal(t, "project.metadata_updated", msg.Event.Type)
+	assert.Equal(t, p.ID, msg.ProjectID)
+
+	resp = doPostWithIfMatch(t, env, url,
+		`{"actor":"tester","patch":{"nonexistent_key":null}}`, "")
+	raw := readClose(t, resp)
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "no-op body: %s", raw)
+	assert.Contains(t, string(raw), `"changed":false`, "no-op patch must report changed=false")
+	assertNoReceive(t, sub.Ch, 200*time.Millisecond, "no-op project metadata patch must not broadcast")
 }
