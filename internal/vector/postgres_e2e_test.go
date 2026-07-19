@@ -26,7 +26,7 @@ func TestPostgresPgvectorIndexesAndRanksSemanticIssue(t *testing.T) {
 		t.Skip("requires pgvector testcontainer")
 	}
 	ctx := context.Background()
-	dsn, cleanup := testenv.NewPostgresContainer(t, ctx)
+	dsn, cleanup := testenv.NewPostgresWithPgvectorContainer(t, ctx)
 	t.Cleanup(cleanup)
 	store, err := pgstore.Open(ctx, dsn)
 	require.NoError(t, err)
@@ -79,12 +79,28 @@ func TestPostgresPgvectorIndexesAndRanksSemanticIssue(t *testing.T) {
 	assert.Greater(t, rolledUp[0].Score, float32(0.99))
 }
 
+func TestPostgresSemanticSearchReportsUnavailableWithoutPgvector(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres testcontainer")
+	}
+	ctx := context.Background()
+	dsn, cleanup := testenv.NewPlainPostgresContainer(t, ctx)
+	t.Cleanup(cleanup)
+	store, err := pgstore.Open(ctx, dsn)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	idx, err := vector.OpenPostgres(ctx, store.DB)
+	assert.Nil(t, idx)
+	require.ErrorContains(t, err, "pgvector is not installed; semantic search is unavailable")
+}
+
 func TestPostgresPgvectorRejectsDimensionsAboveHalfvecLimit(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires pgvector testcontainer")
 	}
 	ctx := context.Background()
-	dsn, cleanup := testenv.NewPostgresContainer(t, ctx)
+	dsn, cleanup := testenv.NewPostgresWithPgvectorContainer(t, ctx)
 	t.Cleanup(cleanup)
 	store, err := pgstore.Open(ctx, dsn)
 	require.NoError(t, err)
@@ -102,7 +118,7 @@ func TestPostgresReconcilersElectOneLeaderPerSchema(t *testing.T) {
 		t.Skip("requires pgvector testcontainer")
 	}
 	ctx := context.Background()
-	dsn, cleanup := testenv.NewPostgresContainer(t, ctx)
+	dsn, cleanup := testenv.NewPostgresWithPgvectorContainer(t, ctx)
 	t.Cleanup(cleanup)
 	store, err := pgstore.Open(ctx, dsn)
 	require.NoError(t, err)
