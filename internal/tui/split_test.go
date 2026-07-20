@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -73,6 +74,1352 @@ func TestSplit_CursorMoveRetargetsDetail(t *testing.T) {
 	}
 	if m.list.cursor != 2 {
 		t.Errorf("list.cursor = %d, want 2", m.list.cursor)
+	}
+}
+
+func splitSearchTransitionFixture(t *testing.T) (Model, func()) {
+	t.Helper()
+	m, cleanup := splitTestSetup(t)
+	m.list.issues = []Issue{
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "other row", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+	}
+	m.list.cursor = 0
+	m.list.selectedUID = "01TEST-aaa1"
+	m.list.selectedProjectID = 7
+	first := m.list.issues[0]
+	m.detail.issue = &first
+	m.detail.scopePID = 7
+	m = openBarFromCmd(t, m, '/')
+	for _, r := range "target" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	if highlighted, ok := pickHighlightedIssue(m.list); !ok || highlighted.UID != "01TEST-bbb2" {
+		t.Fatalf("highlighted issue = (%+v, %v), want bbb2", highlighted, ok)
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("detail issue = %+v, want pre-filter aaa1", m.detail.issue)
+	}
+	return m, cleanup
+}
+
+func TestSplit_SearchEnterRetargetsDetailToFilteredResult(t *testing.T) {
+	m, cleanup := splitSearchTransitionFixture(t)
+	defer cleanup()
+	startGen := m.nextDetailFollowGen
+
+	m, cmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.input.searchFocus != searchFocusResults {
+		t.Fatalf("searchFocus = %v, want results", m.input.searchFocus)
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("detail issue = %+v, want filtered bbb2", m.detail.issue)
+	}
+	if cmd == nil {
+		t.Fatal("Enter transition returned no detail-follow command")
+	}
+	if delta := m.nextDetailFollowGen - startGen; delta != 1 {
+		t.Fatalf("detail follow gen advanced by %d, want 1", delta)
+	}
+}
+
+func TestSplit_SearchEnterWithNoResultsClearsDetail(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m.list.issues = []Issue{
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "other row", Status: "open"},
+	}
+	m.list.cursor = 0
+	m.list.selectedUID = "01TEST-aaa1"
+	m.list.selectedProjectID = 7
+	seed := m.list.issues[0]
+	m.detail = detailModel{issue: &seed, scopePID: 7, gen: 41}
+	m.nextGen = m.detail.gen
+
+	m = openBarFromCmd(t, m, '/')
+	for _, r := range "missing" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	if rows := m.list.visibleRows(); len(rows) != 0 {
+		t.Fatalf("query rows = %d, want zero", len(rows))
+	}
+	if m.input.preSplitDetail == nil || m.input.preSplitDetail.issue == nil ||
+		m.input.preSplitDetail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("saved detail = %+v, want aaa1", m.input.preSplitDetail)
+	}
+	startFollowGen := m.nextDetailFollowGen
+
+	m, cmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatalf("empty results transition returned unexpected command %T", cmd)
+	}
+	if m.input.searchFocus != searchFocusResults {
+		t.Fatalf("searchFocus = %v, want results", m.input.searchFocus)
+	}
+	if m.detail.issue != nil {
+		t.Fatalf("empty results detail = %+v, want nil", m.detail.issue)
+	}
+	if delta := m.nextDetailFollowGen - startFollowGen; delta != 1 {
+		t.Fatalf("empty results follow generation advanced by %d, want 1 invalidation", delta)
+	}
+	if m.input.preSplitDetail == nil || m.input.preSplitDetail.issue == nil ||
+		m.input.preSplitDetail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("empty results lost saved detail: %+v", m.input.preSplitDetail)
+	}
+}
+
+func TestStacked_SearchArrowNavigationDoesNotRetargetHiddenDetail(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m.list.issues = []Issue{
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "first row", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "second row", Status: "open"},
+	}
+	m.list.cursor = 0
+	m.list.selectedUID = "01TEST-aaa1"
+	m.list.selectedProjectID = 7
+	seed := m.list.issues[0]
+	m.detail = detailModel{issue: &seed, scopePID: 7, gen: 41}
+	m.nextGen = m.detail.gen
+
+	m = openBarFromCmd(t, m, '/')
+	if m.input.preSplitDetailCaptured || m.input.preSplitDetail != nil {
+		t.Fatalf("stacked search captured split detail: %+v", m.input.preSplitDetail)
+	}
+	m, cmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if cmd != nil {
+		t.Fatalf("stacked search arrow returned unexpected detail command %T", cmd)
+	}
+	if m.input.searchFocus != searchFocusResults || m.list.selectedUID != "01TEST-bbb2" {
+		t.Fatalf("stacked results focus/selection = %v/%q, want results/bbb2",
+			m.input.searchFocus, m.list.selectedUID)
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" || m.detail.gen != 41 {
+		t.Fatalf("stacked hidden detail = %+v gen %d, want unchanged aaa1/gen 41", m.detail.issue, m.detail.gen)
+	}
+
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.input.kind != inputNone || m.list.selectedUID != "01TEST-aaa1" {
+		t.Fatalf("stacked cancel input/selection = %v/%q, want none/aaa1", m.input.kind, m.list.selectedUID)
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" || m.detail.gen != 41 {
+		t.Fatalf("stacked canceled detail = %+v gen %d, want unchanged aaa1/gen 41", m.detail.issue, m.detail.gen)
+	}
+}
+
+func TestSplit_SearchResultsRefetchRetargetsChangedHighlight(t *testing.T) {
+	m, cleanup := splitSearchTransitionFixture(t)
+	defer cleanup()
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("results detail = %+v, want bbb2", m.detail.issue)
+	}
+
+	m, refetchCmd := stepModel(m, refetchedMsg{
+		dispatchKey: m.currentCacheKey(),
+		issues: []Issue{
+			{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "other row", Status: "open"},
+			{ProjectID: 7, UID: "01TEST-ccc3", ShortID: "ccc3", Title: "target replacement", Status: "open"},
+		},
+	})
+	if refetchCmd == nil {
+		t.Fatal("changed search highlight returned no detail-follow command")
+	}
+	if m.list.selectedUID != "01TEST-ccc3" || m.detail.issue == nil || m.detail.issue.UID != "01TEST-ccc3" {
+		t.Fatalf("refetched selection/detail = %q/%+v, want ccc3/c3 detail", m.list.selectedUID, m.detail.issue)
+	}
+}
+
+func TestSplit_SearchResultsRefetchClearsDetailWhenResultsDisappear(t *testing.T) {
+	m, cleanup := splitSearchTransitionFixture(t)
+	defer cleanup()
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	startFollowGen := m.nextDetailFollowGen
+
+	m, refetchCmd := stepModel(m, refetchedMsg{
+		dispatchKey: m.currentCacheKey(),
+		issues: []Issue{
+			{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "other row", Status: "open"},
+		},
+	})
+	if refetchCmd != nil {
+		t.Fatalf("empty search results returned unexpected command %T", refetchCmd)
+	}
+	if m.list.selectedUID != "" || m.detail.issue != nil {
+		t.Fatalf("empty-results selection/detail = %q/%+v, want empty/nil", m.list.selectedUID, m.detail.issue)
+	}
+	if delta := m.nextDetailFollowGen - startFollowGen; delta != 1 {
+		t.Fatalf("empty-results follow generation advanced by %d, want 1 invalidation", delta)
+	}
+}
+
+func TestSplit_SearchResultsRefetchKeepsMatchingDetailWithoutFollow(t *testing.T) {
+	m, cleanup := splitSearchTransitionFixture(t)
+	defer cleanup()
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	startDetailGen := m.detail.gen
+	startFollowGen := m.nextDetailFollowGen
+
+	m, refetchCmd := stepModel(m, refetchedMsg{
+		dispatchKey: m.currentCacheKey(),
+		issues: []Issue{
+			{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row refreshed", Status: "open"},
+			{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "other row", Status: "open"},
+		},
+	})
+	if refetchCmd != nil {
+		t.Fatalf("unchanged search highlight returned unexpected command %T", refetchCmd)
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" || m.detail.gen != startDetailGen {
+		t.Fatalf("matching detail = %+v gen %d, want bbb2/gen %d", m.detail.issue, m.detail.gen, startDetailGen)
+	}
+	if delta := m.nextDetailFollowGen - startFollowGen; delta != 0 {
+		t.Fatalf("unchanged-results follow generation advanced by %d, want 0", delta)
+	}
+}
+
+func TestSplit_SearchCancelRetargetsDetailToRestoredSelection(t *testing.T) {
+	m, cleanup := splitSearchTransitionFixture(t)
+	defer cleanup()
+	startGen := m.nextDetailFollowGen
+
+	m, enterCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if enterCmd == nil || m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("results transition = detail %+v cmd %T, want bbb2 and follow", m.detail.issue, enterCmd)
+	}
+	if delta := m.nextDetailFollowGen - startGen; delta != 1 {
+		t.Fatalf("results follow gen advanced by %d, want 1", delta)
+	}
+
+	m, firstEscCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if firstEscCmd != nil || m.input.searchFocus != searchFocusQuery {
+		t.Fatalf("first Esc = focus %v cmd %T, want query/nil", m.input.searchFocus, firstEscCmd)
+	}
+	m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.input.kind != inputNone {
+		t.Fatalf("second Esc left input kind %v open", m.input.kind)
+	}
+	assertSelection(t, m, 0, "01TEST-aaa1")
+	if m.list.selectedProjectID != 7 {
+		t.Fatalf("selectedProjectID = %d, want 7", m.list.selectedProjectID)
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("restored detail issue = %+v, want aaa1", m.detail.issue)
+	}
+	if cancelCmd == nil {
+		t.Fatal("second Esc returned no restored-selection follow command")
+	}
+	if delta := m.nextDetailFollowGen - startGen; delta != 2 {
+		t.Fatalf("total follow gen advanced by %d, want 2", delta)
+	}
+
+	m, _ = stepModel(m, refetchedMsg{
+		dispatchKey: m.currentCacheKey(),
+		issues: []Issue{
+			{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "other row", Status: "open"},
+			{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+		},
+	})
+	assertSelection(t, m, 0, "01TEST-aaa1")
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("detail after refetch = %+v, want aaa1", m.detail.issue)
+	}
+	if delta := m.nextDetailFollowGen - startGen; delta != 2 {
+		t.Fatalf("refetch added follow generation: delta %d, want 2", delta)
+	}
+}
+
+func TestSplit_SearchCancelWhileStackedRestoresHiddenDetail(t *testing.T) {
+	m, cleanup := splitSearchTransitionFixture(t)
+	defer cleanup()
+	startGen := m.nextDetailFollowGen
+
+	m, enterCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if enterCmd == nil || m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("results transition = detail %+v cmd %T, want bbb2 and follow", m.detail.issue, enterCmd)
+	}
+	if delta := m.nextDetailFollowGen - startGen; delta != 1 {
+		t.Fatalf("results follow gen advanced by %d, want 1", delta)
+	}
+
+	m, resizeCmd := updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	if m.layout != layoutStacked {
+		t.Fatalf("layout after narrow resize = %v, want stacked", m.layout)
+	}
+	if resizeCmd != nil {
+		t.Fatalf("split-to-stacked resize returned unexpected command %T", resizeCmd)
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("hidden detail after narrow resize = %+v, want bbb2", m.detail.issue)
+	}
+
+	m, firstEscCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if firstEscCmd != nil || m.input.searchFocus != searchFocusQuery {
+		t.Fatalf("first Esc = focus %v cmd %T, want query/nil", m.input.searchFocus, firstEscCmd)
+	}
+	m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.input.kind != inputNone {
+		t.Fatalf("second Esc left input kind %v open", m.input.kind)
+	}
+	assertSelection(t, m, 0, "01TEST-aaa1")
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("restored hidden detail issue = %+v, want aaa1", m.detail.issue)
+	}
+	if cancelCmd == nil {
+		t.Fatal("second Esc returned no restored-selection follow command")
+	}
+	if delta := m.nextDetailFollowGen - startGen; delta != 2 {
+		t.Fatalf("total follow gen advanced by %d, want 2", delta)
+	}
+
+	m, widenCmd := updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	if m.layout != layoutSplit {
+		t.Fatalf("layout after wide resize = %v, want split", m.layout)
+	}
+	if widenCmd != nil {
+		t.Fatalf("stacked-to-split resize returned duplicate follow command %T", widenCmd)
+	}
+	assertSelection(t, m, 0, "01TEST-aaa1")
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("detail after returning to split = %+v, want aaa1", m.detail.issue)
+	}
+	if delta := m.nextDetailFollowGen - startGen; delta != 2 {
+		t.Fatalf("wide resize added follow generation: delta %d, want 2", delta)
+	}
+}
+
+func TestSplit_SearchCancelRestoresDetailWhenPreFilterHasNoRows(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m.list.issues = []Issue{
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "original detail", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+	}
+	m.list.filter.Search = "no-match-anywhere"
+	m.list = m.list.clampCursorToFilter()
+	m.list = m.list.syncSelection(m.list.visibleRows())
+	if rows := m.list.visibleRows(); len(rows) != 0 {
+		t.Fatalf("pre-search visible rows = %d, want 0", len(rows))
+	}
+	original := m.list.issues[0]
+	original.Labels = []string{"keep"}
+	m.detail = detailModel{
+		issue:     &original,
+		scopePID:  7,
+		gen:       41,
+		activeTab: tabEvents,
+		comments:  []CommentEntry{{ID: 1, Body: "original comment"}},
+		events: []EventLogEntry{{
+			ID:      2,
+			Payload: map[string]any{"state": "original"},
+		}},
+	}
+	m.nextGen = m.detail.gen
+	startFollowGen := m.nextDetailFollowGen
+
+	m = openBarFromCmd(t, m, '/')
+	// Mutating the live model after open must not mutate the saved pre-search
+	// detail through shared pointers, slices, or maps.
+	m.detail.issue.Labels[0] = "changed"
+	m.detail.comments[0].Body = "changed comment"
+	m.detail.events[0].Payload["state"] = "changed"
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	for _, r := range "target" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	if highlighted, ok := pickHighlightedIssue(m.list); !ok || highlighted.UID != "01TEST-bbb2" {
+		t.Fatalf("highlighted issue = (%+v, %v), want bbb2", highlighted, ok)
+	}
+	m, enterCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if enterCmd == nil || m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("results transition = detail %+v cmd %T, want bbb2 and follow", m.detail.issue, enterCmd)
+	}
+	pendingFollowGen := m.nextDetailFollowGen
+	if delta := pendingFollowGen - startFollowGen; delta != 1 {
+		t.Fatalf("results follow gen advanced by %d, want 1", delta)
+	}
+
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if cancelCmd == nil {
+		t.Fatal("empty-list snapshot restore returned no freshness refetch")
+	}
+	if m.input.kind != inputNone || m.list.filter.Search != "no-match-anywhere" {
+		t.Fatalf("cancel state = input %v search %q, want none/no-match-anywhere", m.input.kind, m.list.filter.Search)
+	}
+	if rows := m.list.visibleRows(); len(rows) != 0 {
+		t.Fatalf("restored visible rows = %d, want 0", len(rows))
+	}
+	if m.list.selectedUID != "" || m.list.selectedProjectID != 0 {
+		t.Fatalf("restored selection = %q/%d, want empty", m.list.selectedUID, m.list.selectedProjectID)
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("restored hidden detail = %+v, want aaa1", m.detail.issue)
+	}
+	if got := m.detail.issue.Labels; len(got) != 1 || got[0] != "keep" {
+		t.Fatalf("restored labels = %v, want [keep]", got)
+	}
+	if got := m.detail.comments; len(got) != 1 || got[0].Body != "original comment" {
+		t.Fatalf("restored comments = %+v, want original comment", got)
+	}
+	if got := m.detail.events[0].Payload["state"]; got != "original" {
+		t.Fatalf("restored event state = %v, want original", got)
+	}
+	if m.detail.gen != 41 || m.detail.activeTab != tabEvents {
+		t.Fatalf("restored detail state = gen %d tab %v, want 41/events", m.detail.gen, m.detail.activeTab)
+	}
+	if delta := m.nextDetailFollowGen - startFollowGen; delta != 2 {
+		t.Fatalf("cancel invalidation advanced total follow gen by %d, want 2", delta)
+	}
+
+	m, staleCmd := stepModel(m, detailFollowTickMsg{gen: pendingFollowGen})
+	if staleCmd != nil || m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("stale follow = detail %+v cmd %T, want aaa1/nil", m.detail.issue, staleCmd)
+	}
+	m, _ = stepModel(m, refetchedMsg{
+		dispatchKey: m.currentCacheKey(),
+		issues: []Issue{
+			{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "original detail", Status: "open"},
+			{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+		},
+	})
+	if rows := m.list.visibleRows(); len(rows) != 0 {
+		t.Fatalf("visible rows after refetch = %d, want 0", len(rows))
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("detail after refetch = %+v, want aaa1", m.detail.issue)
+	}
+	m, widenCmd := updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	if widenCmd != nil || m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("final split resize = detail %+v cmd %T, want aaa1/nil", m.detail.issue, widenCmd)
+	}
+}
+
+func TestSplit_SearchCancelDoesNotCaptureSearchCreatedDetailAfterResize(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m.list.issues = []Issue{
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "other row", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+	}
+	m.list.filter.Search = "no-match-anywhere"
+	m.list = m.list.clampCursorToFilter()
+	m.list = m.list.syncSelection(m.list.visibleRows())
+	m.detail = newDetailModel()
+	startFollowGen := m.nextDetailFollowGen
+
+	m = openBarFromCmd(t, m, '/')
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	for _, r := range "target" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	m, enterCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if enterCmd == nil || m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("results transition = detail %+v cmd %T, want bbb2 and follow", m.detail.issue, enterCmd)
+	}
+
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m, widenCmd := updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	if widenCmd != nil || m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("search-owned split roundtrip = detail %+v cmd %T, want bbb2/nil", m.detail.issue, widenCmd)
+	}
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if cancelCmd != nil {
+		t.Fatalf("empty-list cancel returned unexpected command %T", cancelCmd)
+	}
+	if rows := m.list.visibleRows(); len(rows) != 0 {
+		t.Fatalf("restored visible rows = %d, want 0", len(rows))
+	}
+	if m.detail.issue != nil {
+		t.Fatalf("restored detail = %+v, want nil pre-search detail", m.detail.issue)
+	}
+	if delta := m.nextDetailFollowGen - startFollowGen; delta != 2 {
+		t.Fatalf("total follow gen advanced by %d, want 2", delta)
+	}
+
+	m, finalWidenCmd := updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	if finalWidenCmd != nil || m.detail.issue != nil {
+		t.Fatalf("final split resize = detail %+v cmd %T, want nil/nil", m.detail.issue, finalWidenCmd)
+	}
+}
+
+func TestSplit_SearchDetailSnapshotTracksAsyncCompletion(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m.list.issues = []Issue{
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "loading detail", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+	}
+	m.list.filter.Search = "no-match-anywhere"
+	m.list = m.list.clampCursorToFilter()
+	m.list = m.list.syncSelection(m.list.visibleRows())
+	seed := m.list.issues[0]
+	m.detail = detailModel{
+		issue:           &seed,
+		scopePID:        7,
+		gen:             41,
+		loading:         true,
+		commentsLoading: true,
+		eventsLoading:   true,
+	}
+	m.nextGen = m.detail.gen
+
+	m = openBarFromCmd(t, m, '/')
+	completed := m.list.issues[0]
+	completed.Title = "completed detail"
+	completed.Body = "fresh body"
+	m, _ = stepModel(m, detailFetchedMsg{
+		gen:      41,
+		issue:    &completed,
+		parent:   &IssueRef{UID: "01TEST-ppp3", ShortID: "ppp3", Title: "parent", Status: "open"},
+		children: []Issue{{ProjectID: 7, UID: "01TEST-ccc3", ShortID: "ccc3", Title: "child", Status: "open"}},
+	})
+	m, _ = stepModel(m, commentsFetchedMsg{
+		gen:      41,
+		comments: []CommentEntry{{ID: 1, Body: "fresh comment"}},
+	})
+	eventsErr := errors.New("events temporarily unavailable")
+	m, _ = stepModel(m, eventsFetchedMsg{gen: 41, err: eventsErr})
+	if m.detail.loading || m.detail.commentsLoading || m.detail.eventsLoading {
+		t.Fatalf("live completion loading flags = %v/%v/%v, want false", m.detail.loading, m.detail.commentsLoading, m.detail.eventsLoading)
+	}
+
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	for _, r := range "target" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("results detail = %+v, want bbb2", m.detail.issue)
+	}
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("restored detail = %+v, want aaa1", m.detail.issue)
+	}
+	if m.detail.issue.Title != "completed detail" || m.detail.issue.Body != "fresh body" {
+		t.Fatalf("restored issue = %+v, want completed detail/fresh body", m.detail.issue)
+	}
+	if m.detail.loading || m.detail.commentsLoading || m.detail.eventsLoading {
+		t.Fatalf("restored loading flags = %v/%v/%v, want false", m.detail.loading, m.detail.commentsLoading, m.detail.eventsLoading)
+	}
+	if m.detail.parent == nil || m.detail.parent.UID != "01TEST-ppp3" || len(m.detail.children) != 1 {
+		t.Fatalf("restored relationships = parent %+v children %+v", m.detail.parent, m.detail.children)
+	}
+	if len(m.detail.comments) != 1 || m.detail.comments[0].Body != "fresh comment" {
+		t.Fatalf("restored comments = %+v, want fresh comment", m.detail.comments)
+	}
+	if !errors.Is(m.detail.eventsErr, eventsErr) {
+		t.Fatalf("restored events error = %v, want %v", m.detail.eventsErr, eventsErr)
+	}
+}
+
+func TestSplit_SearchCancelPrefersCompletedSnapshotOverStaleMatchingDetail(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m.list.issues = []Issue{
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "loading detail", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+	}
+	m.list.cursor = 0
+	m.list.selectedUID = "01TEST-aaa1"
+	m.list.selectedProjectID = 7
+	seed := m.list.issues[0]
+	m.detail = detailModel{
+		issue:           &seed,
+		scopePID:        7,
+		gen:             41,
+		loading:         true,
+		commentsLoading: true,
+	}
+	m.nextGen = m.detail.gen
+	startFollowGen := m.nextDetailFollowGen
+
+	m = openBarFromCmd(t, m, '/')
+	for _, r := range "target" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	if highlighted, ok := pickHighlightedIssue(m.list); !ok || highlighted.UID != "01TEST-bbb2" {
+		t.Fatalf("highlighted issue = (%+v, %v), want bbb2", highlighted, ok)
+	}
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+
+	completed := m.list.issues[0]
+	completed.Title = "completed detail"
+	completed.Body = "fresh body"
+	m, _ = stepModel(m, detailFetchedMsg{gen: 41, issue: &completed})
+	commentsErr := errors.New("comments temporarily unavailable")
+	m, _ = stepModel(m, commentsFetchedMsg{gen: 41, err: commentsErr})
+	if m.detail.issue == nil || m.detail.issue.Title != "completed detail" || m.detail.loading || m.detail.commentsLoading {
+		t.Fatalf("hidden live detail did not converge: %+v loading %v/%v", m.detail.issue, m.detail.loading, m.detail.commentsLoading)
+	}
+
+	m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if cancelCmd == nil {
+		t.Fatal("matching-snapshot cancel returned no freshness refetch")
+	}
+	assertSelection(t, m, 0, "01TEST-aaa1")
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("restored detail = %+v, want aaa1", m.detail.issue)
+	}
+	if m.detail.issue.Title != "completed detail" || m.detail.issue.Body != "fresh body" {
+		t.Fatalf("restored issue = %+v, want completed detail/fresh body", m.detail.issue)
+	}
+	if m.detail.loading || m.detail.commentsLoading {
+		t.Fatalf("restored loading flags = %v/%v, want false", m.detail.loading, m.detail.commentsLoading)
+	}
+	if !errors.Is(m.detail.commentsErr, commentsErr) {
+		t.Fatalf("restored comments error = %v, want %v", m.detail.commentsErr, commentsErr)
+	}
+	if delta := m.nextDetailFollowGen - startFollowGen; delta != 0 {
+		t.Fatalf("cancel advanced follow gen by %d, want 0", delta)
+	}
+
+	m, widenCmd := updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	if widenCmd != nil {
+		t.Fatalf("final split resize returned unexpected command %T", widenCmd)
+	}
+	if m.detail.issue == nil || m.detail.issue.Title != "completed detail" || m.detail.loading {
+		t.Fatalf("final split detail = %+v loading %v, want completed/non-loading", m.detail.issue, m.detail.loading)
+	}
+	if delta := m.nextDetailFollowGen - startFollowGen; delta != 0 {
+		t.Fatalf("final resize advanced follow gen by %d, want 0", delta)
+	}
+}
+
+func TestStacked_SearchCancelRefetchesAndCompletesRestoredSnapshot(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m.list.issues = []Issue{
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "loading detail", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+	}
+	m.list.cursor = 0
+	m.list.selectedUID = "01TEST-aaa1"
+	m.list.selectedProjectID = 7
+	seed := m.list.issues[0]
+	m.detail = detailModel{
+		issue:           &seed,
+		scopePID:        7,
+		gen:             41,
+		loading:         true,
+		commentsLoading: true,
+		eventsLoading:   true,
+		linksLoading:    true,
+	}
+	m.nextGen = m.detail.gen
+
+	m = openBarFromCmd(t, m, '/')
+	for _, r := range "target" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("results detail = %+v, want bbb2", m.detail.issue)
+	}
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+
+	completed := seed
+	completed.Title = "fresh issue"
+	m, _ = stepModel(m, detailFetchedMsg{gen: 41, issue: &completed})
+	if m.input.preSplitDetail == nil || m.input.preSplitDetail.issue == nil ||
+		m.input.preSplitDetail.issue.Title != "fresh issue" {
+		t.Fatalf("partial off-screen response did not update snapshot: %+v", m.input.preSplitDetail)
+	}
+
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if cancelCmd == nil {
+		t.Fatal("partial snapshot restore returned no freshness refetch")
+	}
+	batch, ok := cancelCmd().(tea.BatchMsg)
+	if !ok || len(batch) != 4 {
+		t.Fatalf("snapshot restore refetch = %T len %d, want four-command batch", batch, len(batch))
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" || m.detail.issue.Title != "fresh issue" {
+		t.Fatalf("restored detail = %+v, want fresh aaa1 snapshot", m.detail.issue)
+	}
+	if !m.detail.commentsLoading || !m.detail.eventsLoading || !m.detail.linksLoading {
+		t.Fatalf("partial snapshot loading flags = %v/%v/%v, want all true",
+			m.detail.commentsLoading, m.detail.eventsLoading, m.detail.linksLoading)
+	}
+
+	m, _ = stepModel(m, commentsFetchedMsg{gen: 41, comments: []CommentEntry{{ID: 1, Body: "fresh comment"}}})
+	m, _ = stepModel(m, eventsFetchedMsg{gen: 41, events: []EventLogEntry{{ID: 2}}})
+	m, _ = stepModel(m, linksFetchedMsg{gen: 41, links: []LinkEntry{{Type: "related"}}})
+	if m.detail.commentsLoading || m.detail.eventsLoading || m.detail.linksLoading {
+		t.Fatalf("late restored responses left loading flags = %v/%v/%v, want all false",
+			m.detail.commentsLoading, m.detail.eventsLoading, m.detail.linksLoading)
+	}
+	if len(m.detail.comments) != 1 || m.detail.comments[0].Body != "fresh comment" ||
+		len(m.detail.events) != 1 || len(m.detail.links) != 1 {
+		t.Fatalf("restored activity = comments %+v events %+v links %+v, want fresh payloads",
+			m.detail.comments, m.detail.events, m.detail.links)
+	}
+}
+
+func TestSplit_SearchCancelPreservesNewerMatchingLiveDetail(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m.list.issues = []Issue{
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "loading detail", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+	}
+	m.list.cursor = 0
+	m.list.selectedUID = "01TEST-aaa1"
+	m.list.selectedProjectID = 7
+	seed := m.list.issues[0]
+	childOne := Issue{ProjectID: 7, UID: "01TEST-ccc3", ShortID: "ccc3", Title: "child one", Status: "open"}
+	childTwo := Issue{ProjectID: 7, UID: "01TEST-ddd4", ShortID: "ddd4", Title: "child two", Status: "open"}
+	navIssue := Issue{ProjectID: 7, UID: "01TEST-nnn5", ShortID: "nnn5", Title: "prior nav", Status: "open"}
+	m.detail = detailModel{
+		issue:       &seed,
+		children:    []Issue{childOne, childTwo},
+		detailFocus: focusChildren,
+		loading:     true,
+		gen:         41,
+		activeTab:   tabLinks,
+		scroll:      7,
+		tabCursor:   2,
+		childCursor: 1,
+		navStack: []detailModel{{
+			issue: &navIssue, scopePID: 7, gen: 40,
+		}},
+		scopePID:    7,
+		tabExplicit: true,
+	}
+	m.nextGen = m.detail.gen
+
+	m = openBarFromCmd(t, m, '/')
+	for _, r := range "target" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+
+	completed := m.list.issues[0]
+	completed.Title = "older completed snapshot"
+	m, _ = stepModel(m, detailFetchedMsg{
+		gen: 41, issue: &completed, children: []Issue{childOne, childTwo},
+	})
+
+	m, toTargetCmd := updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	if toTargetCmd == nil || m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("split transition = detail %+v cmd %T, want bbb2 and follow", m.detail.issue, toTargetCmd)
+	}
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	m, toOriginalCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if toOriginalCmd == nil || m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("original transition = detail %+v cmd %T, want aaa1 and follow", m.detail.issue, toOriginalCmd)
+	}
+	newerGen := m.detail.gen
+	if newerGen <= 41 {
+		t.Fatalf("new live detail generation = %d, want newer than snapshot generation 41", newerGen)
+	}
+	newest := m.list.issues[0]
+	newest.Title = "newest live detail"
+	m, _ = stepModel(m, detailFetchedMsg{
+		gen: newerGen, issue: &newest, children: []Issue{childOne, childTwo},
+	})
+	m, _ = stepModel(m, commentsFetchedMsg{
+		gen: newerGen, comments: []CommentEntry{{ID: 9, Body: "newest live comment"}},
+	})
+
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if cancelCmd == nil {
+		t.Fatal("matching-live cancel returned no freshness refetch")
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" || m.detail.gen != newerGen {
+		t.Fatalf("detail after cancel = %+v gen %d, want newer live aaa1 gen %d", m.detail.issue, m.detail.gen, newerGen)
+	}
+	if m.detail.issue.Title != "newest live detail" || len(m.detail.comments) != 1 ||
+		m.detail.comments[0].Body != "newest live comment" {
+		t.Fatalf("detail content after cancel = %+v comments %+v, want newest live data", m.detail.issue, m.detail.comments)
+	}
+	if m.detail.detailFocus != focusChildren || m.detail.activeTab != tabLinks ||
+		m.detail.scroll != 7 || m.detail.tabCursor != 2 || m.detail.childCursor != 1 || !m.detail.tabExplicit {
+		t.Fatalf("restored presentation = focus %v tab %v scroll %d cursors %d/%d explicit %v",
+			m.detail.detailFocus, m.detail.activeTab, m.detail.scroll,
+			m.detail.tabCursor, m.detail.childCursor, m.detail.tabExplicit)
+	}
+	if len(m.detail.navStack) != 1 || m.detail.navStack[0].issue == nil ||
+		m.detail.navStack[0].issue.UID != "01TEST-nnn5" {
+		t.Fatalf("restored navigation stack = %+v, want prior nav issue", m.detail.navStack)
+	}
+}
+
+func TestSplit_SearchCancelMergesSnapshotMutationIntoNewerMatchingLiveDetail(t *testing.T) {
+	mutationErr := errors.New("mutation rejected")
+	tests := []struct {
+		name       string
+		mutation   mutationDoneMsg
+		wantStatus string
+		wantErr    error
+	}{
+		{
+			name: "failure",
+			mutation: mutationDoneMsg{
+				origin: "detail", gen: 41, kind: "close", err: mutationErr,
+			},
+			wantStatus: "close failed",
+			wantErr:    mutationErr,
+		},
+		{
+			name: "success",
+			mutation: mutationDoneMsg{
+				origin: "detail", gen: 41, kind: "close",
+				resp: &MutationResp{Issue: &Issue{
+					ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Status: "closed",
+				}},
+			},
+			wantStatus: "closed #aaa1",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, cleanup := splitSearchTransitionFixture(t)
+			defer cleanup()
+			m.detail.gen = 41
+			m.nextGen = 41
+			m.input.preSplitDetail.gen = 41
+
+			m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+			if m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+				t.Fatalf("target detail = %+v, want bbb2", m.detail.issue)
+			}
+			m, _ = stepModel(m, tc.mutation)
+			if m.input.preSplitDetail == nil ||
+				!strings.Contains(stripANSI(m.input.preSplitDetail.status), tc.wantStatus) {
+				t.Fatalf("saved mutation status = %q, want %q",
+					stripANSI(m.input.preSplitDetail.status), tc.wantStatus)
+			}
+
+			m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+			m, _ = stepModel(m, tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+			for _, r := range "other" {
+				m, _ = stepModel(m, runeKey(r))
+			}
+			m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+			if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+				t.Fatalf("retargeted detail = %+v, want aaa1", m.detail.issue)
+			}
+			newerGen := m.detail.gen
+			if newerGen <= 41 {
+				t.Fatalf("retargeted detail generation = %d, want newer than 41", newerGen)
+			}
+
+			m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+			m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+			if cancelCmd == nil {
+				t.Fatal("matching-live cancel returned no freshness refetch")
+			}
+			batch, ok := cancelCmd().(tea.BatchMsg)
+			if !ok || len(batch) != 4 {
+				t.Fatalf("matching-live refetch = %T len %d, want four-command batch", batch, len(batch))
+			}
+			if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" || m.detail.gen != newerGen {
+				t.Fatalf("cancel detail = %+v gen %d, want aaa1/live gen %d", m.detail.issue, m.detail.gen, newerGen)
+			}
+			if got := stripANSI(m.detail.status); !strings.Contains(got, tc.wantStatus) {
+				t.Fatalf("cancel mutation status = %q, want %q", got, tc.wantStatus)
+			}
+			if !errors.Is(m.detail.err, tc.wantErr) {
+				t.Fatalf("cancel mutation err = %v, want %v", m.detail.err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestSplit_SearchCancelSnapshotInvalidatesDifferentLiveFollow(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m.list.issues = []Issue{
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "loading detail", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+	}
+	m.list.cursor = 0
+	m.list.selectedUID = "01TEST-aaa1"
+	m.list.selectedProjectID = 7
+	seed := m.list.issues[0]
+	m.detail = detailModel{issue: &seed, scopePID: 7, gen: 41, loading: true}
+	m.nextGen = m.detail.gen
+	startFollowGen := m.nextDetailFollowGen
+
+	m = openBarFromCmd(t, m, '/')
+	for _, r := range "target" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	completed := m.list.issues[0]
+	completed.Title = "completed snapshot"
+	m, _ = stepModel(m, detailFetchedMsg{gen: 41, issue: &completed})
+
+	m, followCmd := updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	if followCmd == nil || m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("split transition = detail %+v cmd %T, want bbb2 and follow", m.detail.issue, followCmd)
+	}
+	pendingFollowGen := m.nextDetailFollowGen
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if cancelCmd == nil {
+		t.Fatal("snapshot cancel returned no freshness refetch")
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" || m.detail.issue.Title != "completed snapshot" || m.detail.loading {
+		t.Fatalf("restored snapshot = detail %+v loading %v, want completed aaa1", m.detail.issue, m.detail.loading)
+	}
+	if delta := m.nextDetailFollowGen - startFollowGen; delta != 2 {
+		t.Fatalf("follow generation advanced by %d, want target follow plus snapshot invalidation", delta)
+	}
+
+	m, staleCmd := stepModel(m, detailFollowTickMsg{gen: pendingFollowGen})
+	if staleCmd != nil || m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("stale follow = detail %+v cmd %T, want restored aaa1/nil", m.detail.issue, staleCmd)
+	}
+}
+
+func TestSplit_SearchCancelConvergesSnapshotWithSameGenerationMutation(t *testing.T) {
+	mutationErr := errors.New("mutation rejected")
+	tests := []struct {
+		name       string
+		mutation   mutationDoneMsg
+		wantStatus string
+		wantErr    error
+	}{
+		{
+			name: "failure",
+			mutation: mutationDoneMsg{
+				origin: "detail", gen: 41, kind: "close", err: mutationErr,
+			},
+			wantStatus: "close failed",
+			wantErr:    mutationErr,
+		},
+		{
+			name: "success",
+			mutation: mutationDoneMsg{
+				origin: "detail", gen: 41, kind: "close",
+				resp: &MutationResp{Issue: &Issue{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Status: "closed"}},
+			},
+			wantStatus: "closed #aaa1",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, cleanup := splitTestSetup(t)
+			defer cleanup()
+			m.list.issues = []Issue{
+				{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "loading detail", Status: "open"},
+				{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+			}
+			m.list.cursor = 0
+			m.list.selectedUID = "01TEST-aaa1"
+			m.list.selectedProjectID = 7
+			seed := m.list.issues[0]
+			m.detail = detailModel{issue: &seed, scopePID: 7, gen: 41, loading: true}
+			m.nextGen = m.detail.gen
+
+			m = openBarFromCmd(t, m, '/')
+			for _, r := range "target" {
+				m, _ = stepModel(m, runeKey(r))
+			}
+			m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+
+			completed := m.list.issues[0]
+			completed.Title = "completed snapshot"
+			completed.Body = "fresh fetched body"
+			m, _ = stepModel(m, detailFetchedMsg{gen: 41, issue: &completed})
+
+			m, mutationCmd := stepModel(m, tc.mutation)
+			if !strings.Contains(stripANSI(m.detail.status), tc.wantStatus) {
+				t.Fatalf("live mutation status = %q, want %q", stripANSI(m.detail.status), tc.wantStatus)
+			}
+			if tc.wantErr != nil && mutationCmd != nil {
+				t.Fatalf("failed mutation returned unexpected command %T", mutationCmd)
+			}
+			if tc.wantErr == nil && mutationCmd == nil {
+				t.Fatal("successful mutation returned no refetch command")
+			}
+
+			m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+			if cancelCmd == nil {
+				t.Fatal("matching-snapshot cancel returned no freshness refetch")
+			}
+			if m.detail.issue == nil || m.detail.issue.Title != "completed snapshot" || m.detail.issue.Body != "fresh fetched body" {
+				t.Fatalf("restored fetched detail = %+v, want completed snapshot/fresh body", m.detail.issue)
+			}
+			if !strings.Contains(stripANSI(m.detail.status), tc.wantStatus) {
+				t.Fatalf("restored mutation status = %q, want %q", stripANSI(m.detail.status), tc.wantStatus)
+			}
+			if !errors.Is(m.detail.err, tc.wantErr) {
+				t.Fatalf("restored mutation err = %v, want %v", m.detail.err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestSplit_SearchRetargetMutationRefetchesSavedDetail(t *testing.T) {
+	m, cleanup := splitSearchTransitionFixture(t)
+	defer cleanup()
+	m.detail.gen = 41
+	m.nextGen = 41
+	m.input.preSplitDetail.gen = 41
+
+	m, followCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if followCmd == nil || m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("results transition = detail %+v cmd %T, want bbb2/follow", m.detail.issue, followCmd)
+	}
+
+	mutation := mutationDoneMsg{
+		origin: "detail",
+		gen:    41,
+		kind:   "close",
+		resp: &MutationResp{Issue: &Issue{
+			ProjectID: 7,
+			UID:       "01TEST-aaa1",
+			ShortID:   "aaa1",
+			Title:     "other row",
+			Status:    "closed",
+		}},
+	}
+	m, mutationCmd := stepModel(m, mutation)
+	if mutationCmd == nil {
+		t.Fatal("snapshot-only mutation returned no refresh commands")
+	}
+	batch, ok := mutationCmd().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("mutation refresh = %T len %d, want list debounce plus detail batch", batch, len(batch))
+	}
+	if !m.pendingRefetch {
+		t.Fatal("snapshot-only mutation did not schedule list refetch")
+	}
+
+	closed := Issue{
+		ProjectID: 7,
+		UID:       "01TEST-aaa1",
+		ShortID:   "aaa1",
+		Title:     "other row",
+		Status:    "closed",
+	}
+	m, _ = stepModel(m, detailFetchedMsg{gen: 41, issue: &closed})
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if cancelCmd == nil {
+		t.Fatal("snapshot cancel returned no freshness refetch")
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" || m.detail.issue.Status != "closed" {
+		t.Fatalf("restored detail = %+v, want refreshed closed aaa1", m.detail.issue)
+	}
+	if got := stripANSI(m.detail.status); !strings.Contains(got, "closed #aaa1") {
+		t.Fatalf("restored mutation status = %q, want close confirmation", got)
+	}
+	if m.list.issues[0].Status != "open" || !m.pendingRefetch {
+		t.Fatalf("pre-refetch list status/pending = %q/%v, want open/true", m.list.issues[0].Status, m.pendingRefetch)
+	}
+
+	m, _ = stepModel(m, refetchedMsg{
+		dispatchKey: m.currentCacheKey(),
+		issues: []Issue{
+			closed,
+			{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+		},
+	})
+	if m.list.issues[0].Status != "closed" || m.detail.issue == nil || m.detail.issue.Status != "closed" {
+		t.Fatalf("refetched list/detail = %q/%+v, want closed/closed", m.list.issues[0].Status, m.detail.issue)
+	}
+}
+
+func TestSplit_SearchCancelRejectsOlderSameGenerationFetchResults(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m.list.issues = []Issue{
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "initial detail", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+	}
+	m.list.cursor = 0
+	m.list.selectedUID = "01TEST-aaa1"
+	m.list.selectedProjectID = 7
+	seed := m.list.issues[0]
+	m.detail = detailModel{issue: &seed, scopePID: 7, gen: 41}
+	m.nextGen = m.detail.gen
+
+	m = openBarFromCmd(t, m, '/')
+	for _, r := range "target" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+
+	oldAPI := &fakeDetailAPI{
+		getIssueResult: &Issue{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "older issue response", Status: "open"},
+		commentsResult: []CommentEntry{{ID: 1, Body: "older comment response"}},
+	}
+	newAPI := &fakeDetailAPI{
+		getIssueResult: &Issue{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "newer issue response", Status: "open"},
+		commentsResult: []CommentEntry{{ID: 2, Body: "newer comment response"}},
+	}
+	oldIssueCmd := fetchIssue(oldAPI, 7, "aaa1", 41)
+	oldCommentsCmd := fetchComments(oldAPI, 7, "aaa1", 41)
+	newIssueCmd := fetchIssue(newAPI, 7, "aaa1", 41)
+	newCommentsCmd := fetchComments(newAPI, 7, "aaa1", 41)
+
+	m, _ = stepModel(m, newIssueCmd())
+	m, _ = stepModel(m, newCommentsCmd())
+	if m.detail.issue == nil || m.detail.issue.Title != "newer issue response" ||
+		len(m.detail.comments) != 1 || m.detail.comments[0].Body != "newer comment response" {
+		t.Fatalf("newer split responses = detail %+v comments %+v", m.detail.issue, m.detail.comments)
+	}
+
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m, _ = stepModel(m, oldIssueCmd())
+	m, _ = stepModel(m, oldCommentsCmd())
+	if m.detail.issue == nil || m.detail.issue.Title != "newer issue response" ||
+		len(m.detail.comments) != 1 || m.detail.comments[0].Body != "newer comment response" {
+		t.Fatalf("hidden live detail changed = detail %+v comments %+v", m.detail.issue, m.detail.comments)
+	}
+
+	m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if cancelCmd == nil {
+		t.Fatal("matching-snapshot cancel returned no freshness refetch")
+	}
+	if m.detail.issue == nil || m.detail.issue.Title != "newer issue response" {
+		t.Errorf("restored issue = %+v, want newer response", m.detail.issue)
+	}
+	if len(m.detail.comments) != 1 || m.detail.comments[0].Body != "newer comment response" {
+		t.Errorf("restored comments = %+v, want newer response", m.detail.comments)
+	}
+}
+
+func TestSplit_SearchSnapshotRejectsOlderFetchAfterLiveRetarget(t *testing.T) {
+	m, cleanup := splitTestSetup(t)
+	defer cleanup()
+	m.list.issues = []Issue{
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "initial detail", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+	}
+	m.list.cursor = 0
+	m.list.selectedUID = "01TEST-aaa1"
+	m.list.selectedProjectID = 7
+	seed := m.list.issues[0]
+	m.detail = detailModel{issue: &seed, scopePID: 7, gen: 41}
+	m.nextGen = m.detail.gen
+
+	m = openBarFromCmd(t, m, '/')
+	for _, r := range "target" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	oldAPI := &fakeDetailAPI{
+		getIssueResult: &Issue{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "older issue response", Status: "open"},
+		commentsResult: []CommentEntry{{ID: 1, Body: "older comment response"}},
+	}
+	newAPI := &fakeDetailAPI{
+		getIssueResult: &Issue{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "newer issue response", Status: "open"},
+		commentsResult: []CommentEntry{{ID: 2, Body: "newer comment response"}},
+	}
+	oldIssueCmd := fetchIssue(oldAPI, 7, "aaa1", 41)
+	oldCommentsCmd := fetchComments(oldAPI, 7, "aaa1", 41)
+	newIssueCmd := fetchIssue(newAPI, 7, "aaa1", 41)
+	newCommentsCmd := fetchComments(newAPI, 7, "aaa1", 41)
+
+	m, followCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if followCmd == nil || m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("live retarget = detail %+v cmd %T, want bbb2/follow", m.detail.issue, followCmd)
+	}
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m, _ = stepModel(m, newIssueCmd())
+	m, _ = stepModel(m, newCommentsCmd())
+	if m.input.preSplitDetail == nil || m.input.preSplitDetail.issue == nil ||
+		m.input.preSplitDetail.issue.Title != "newer issue response" {
+		t.Fatalf("newer snapshot-only responses did not update saved detail: %+v", m.input.preSplitDetail)
+	}
+	m, _ = stepModel(m, oldIssueCmd())
+	m, _ = stepModel(m, oldCommentsCmd())
+
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if cancelCmd == nil {
+		t.Fatal("snapshot cancel returned no freshness refetch")
+	}
+	if m.detail.issue == nil || m.detail.issue.Title != "newer issue response" {
+		t.Errorf("restored issue = %+v, want newer response", m.detail.issue)
+	}
+	if len(m.detail.comments) != 1 || m.detail.comments[0].Body != "newer comment response" {
+		t.Errorf("restored comments = %+v, want newer response", m.detail.comments)
+	}
+}
+
+func stackedSearchTransitionFixture(t *testing.T) (Model, func()) {
+	t.Helper()
+	t.Setenv("KATA_COLOR_MODE", "none")
+	t.Setenv("NO_COLOR", "")
+	applyDefaultColorMode()
+
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7, projectName: "example-project"}
+	m.list.loading = false
+	m.list.issues = []Issue{
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "other row", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+	}
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	if m.layout != layoutStacked || m.detail.issue != nil {
+		t.Fatalf("stacked setup = layout %v detail %+v, want stacked/nil", m.layout, m.detail.issue)
+	}
+	m = openBarFromCmd(t, m, '/')
+	for _, r := range "target" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+	if highlighted, ok := pickHighlightedIssue(m.list); !ok || highlighted.UID != "01TEST-bbb2" {
+		t.Fatalf("highlighted issue = (%+v, %v), want bbb2", highlighted, ok)
+	}
+	return m, func() { applyDefaultColorMode() }
+}
+
+func TestStacked_SearchResizeIntoSplitThenCancelRestoresDetail(t *testing.T) {
+	m, cleanup := stackedSearchTransitionFixture(t)
+	defer cleanup()
+	startGen := m.nextDetailFollowGen
+
+	m, widenCmd := updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	if m.layout != layoutSplit {
+		t.Fatalf("layout after wide resize = %v, want split", m.layout)
+	}
+	if widenCmd == nil {
+		t.Fatal("stacked-to-split resize returned no bootstrap follow command")
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("bootstrapped detail after wide resize = %+v, want bbb2", m.detail.issue)
+	}
+	if delta := m.nextDetailFollowGen - startGen; delta != 1 {
+		t.Fatalf("bootstrap follow gen advanced by %d, want 1", delta)
+	}
+
+	m, narrowCmd := updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	if m.layout != layoutStacked {
+		t.Fatalf("layout after narrow resize = %v, want stacked", m.layout)
+	}
+	if narrowCmd != nil {
+		t.Fatalf("split-to-stacked resize returned unexpected command %T", narrowCmd)
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("hidden detail after narrow resize = %+v, want bbb2", m.detail.issue)
+	}
+
+	m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.input.kind != inputNone {
+		t.Fatalf("Esc left input kind %v open", m.input.kind)
+	}
+	assertSelection(t, m, 0, "01TEST-aaa1")
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("restored hidden detail issue = %+v, want aaa1", m.detail.issue)
+	}
+	if cancelCmd == nil {
+		t.Fatal("Esc returned no restored-selection follow command")
+	}
+	if delta := m.nextDetailFollowGen - startGen; delta != 2 {
+		t.Fatalf("total follow gen advanced by %d, want 2", delta)
+	}
+
+	m, finalWidenCmd := updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	if m.layout != layoutSplit {
+		t.Fatalf("final layout after wide resize = %v, want split", m.layout)
+	}
+	if finalWidenCmd != nil {
+		t.Fatalf("final stacked-to-split resize returned duplicate follow command %T", finalWidenCmd)
+	}
+	assertSelection(t, m, 0, "01TEST-aaa1")
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("detail after returning to split = %+v, want aaa1", m.detail.issue)
+	}
+	if delta := m.nextDetailFollowGen - startGen; delta != 2 {
+		t.Fatalf("final resize added follow generation: delta %d, want 2", delta)
+	}
+}
+
+func TestStacked_SearchResizeIntoSplitRetargetsInheritedDetail(t *testing.T) {
+	t.Setenv("KATA_COLOR_MODE", "none")
+	t.Setenv("NO_COLOR", "")
+	applyDefaultColorMode()
+	defer applyDefaultColorMode()
+
+	m := initialModel(Options{})
+	m.api = &Client{}
+	m.scope = scope{projectID: 7, projectName: "example-project"}
+	m.list.loading = false
+	m.list.issues = []Issue{
+		{ProjectID: 7, UID: "01TEST-aaa1", ShortID: "aaa1", Title: "other row", Status: "open"},
+		{ProjectID: 7, UID: "01TEST-bbb2", ShortID: "bbb2", Title: "target row", Status: "open"},
+	}
+	m, _ = updateModel(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	inherited := m.list.issues[0]
+	m.detail = detailModel{issue: &inherited, scopePID: 7, gen: 41}
+	m.nextGen = 41
+	m = openBarFromCmd(t, m, '/')
+	for _, r := range "target" {
+		m, _ = stepModel(m, runeKey(r))
+	}
+
+	m, widenCmd := updateModel(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	if m.layout != layoutSplit {
+		t.Fatalf("layout after widen = %v, want split", m.layout)
+	}
+	if widenCmd == nil {
+		t.Fatal("active-search widen returned no detail-follow command")
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("detail after widen = %+v, want highlighted bbb2", m.detail.issue)
+	}
+	if m.input.preSplitDetail == nil || m.input.preSplitDetail.issue == nil ||
+		m.input.preSplitDetail.issue.UID != "01TEST-aaa1" {
+		t.Fatalf("captured inherited detail = %+v, want aaa1", m.input.preSplitDetail)
+	}
+}
+
+func TestStacked_SearchCancelWithoutSplitDetailDoesNotScheduleFollow(t *testing.T) {
+	m, cleanup := stackedSearchTransitionFixture(t)
+	defer cleanup()
+	startGen := m.nextDetailFollowGen
+
+	m, enterCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if enterCmd != nil || m.detail.issue != nil {
+		t.Fatalf("stacked results transition = detail %+v cmd %T, want nil/nil", m.detail.issue, enterCmd)
+	}
+	m, _ = stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	m, cancelCmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if cancelCmd != nil || m.detail.issue != nil {
+		t.Fatalf("stacked cancel = detail %+v cmd %T, want nil/nil", m.detail.issue, cancelCmd)
+	}
+	if delta := m.nextDetailFollowGen - startGen; delta != 0 {
+		t.Fatalf("stacked-only search advanced follow gen by %d, want 0", delta)
+	}
+}
+
+func TestSplit_SearchNoOpArrowRetargetsDetailToFilteredResult(t *testing.T) {
+	m, cleanup := splitSearchTransitionFixture(t)
+	defer cleanup()
+	startGen := m.nextDetailFollowGen
+
+	m, cmd := stepModel(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.input.searchFocus != searchFocusResults || m.list.cursor != 0 {
+		t.Fatalf("search/cursor = %v/%d, want results/0", m.input.searchFocus, m.list.cursor)
+	}
+	if m.detail.issue == nil || m.detail.issue.UID != "01TEST-bbb2" {
+		t.Fatalf("detail issue = %+v, want filtered bbb2", m.detail.issue)
+	}
+	if cmd == nil {
+		t.Fatal("no-op arrow transition returned no detail-follow command")
+	}
+	if delta := m.nextDetailFollowGen - startGen; delta != 1 {
+		t.Fatalf("detail follow gen advanced by %d, want 1", delta)
 	}
 }
 

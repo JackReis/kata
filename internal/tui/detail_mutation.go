@@ -125,18 +125,32 @@ func (dm detailModel) dispatchPanelPromptCommit(
 func (dm detailModel) applyMutation(
 	m mutationDoneMsg, api detailAPI,
 ) (detailModel, tea.Cmd) {
-	if m.origin != "detail" || m.gen != dm.gen {
+	var applied bool
+	dm, applied = dm.applyMutationState(m)
+	if !applied || m.err != nil {
 		return dm, nil
+	}
+	return dm, dm.refetch(api)
+}
+
+// applyMutationState applies the generation-guarded, user-visible portion of
+// a detail mutation completion without dispatching its follow-up refetch. The
+// search detail snapshot uses the same transition so cancellation can combine
+// fresher fetched content with mutation status and errors that arrived while
+// the search was active.
+func (dm detailModel) applyMutationState(m mutationDoneMsg) (detailModel, bool) {
+	if m.origin != "detail" || m.gen != dm.gen {
+		return dm, false
 	}
 	if m.err != nil {
 		dm.err = m.err
 		dm.status = errorStyle.Render(
 			fmt.Sprintf("%s failed: %s", m.kind, m.err.Error()),
 		)
-		return dm, nil
+		return dm, true
 	}
 	dm.status = mutationSuccessText(m, dm.issue)
-	return dm, dm.refetchAfterMutation(api)
+	return dm, true
 }
 
 // successTemplates maps mutation-kind to the printf template used by
@@ -177,13 +191,10 @@ func mutationSuccessText(m mutationDoneMsg, iss *Issue) string {
 	return ""
 }
 
-// refetchAfterMutation re-fetches the issue and the three tabs so the
-// rendered detail reflects the new state without waiting for the SSE
-// consumer (Task 11) to invalidate. The four fetches run in parallel
-// via tea.Batch — the order they land doesn't matter because each
-// fetch updates a distinct slice on dm. dm.gen rides every fetch so a
-// later jump/pop discards stale results.
-func (dm detailModel) refetchAfterMutation(api detailAPI) tea.Cmd {
+// refetch re-fetches the issue and the three tabs so a retained detail model
+// can converge with daemon state after either a mutation or snapshot restore.
+// The four fetches run in parallel; dm.gen lets a later open/jump reject them.
+func (dm detailModel) refetch(api detailAPI) tea.Cmd {
 	if dm.issue == nil {
 		return nil
 	}
