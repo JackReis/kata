@@ -110,8 +110,12 @@ handle. It is safe to call more than once.
 - Set `Auth.TrustCallerAuthentication` to `true` only when trusted middleware
   already authenticates every request before it reaches `service.Handler()`.
   Never expose that handler directly on an untrusted listener.
+- Set `Config.Access` when the host owns both identity and per-operation
+  authorization. The host middleware attaches an authenticated
+  `kata.Principal` in process with `kata.WithPrincipal`; Kata never accepts
+  that principal from a network header.
 
-Construction fails when neither policy is selected or when both are set. The
+Construction fails when no policy is selected or when policies are combined. The
 explicit choice prevents an embedded service from accidentally inheriting the
 standalone daemon's local-user trust boundary.
 
@@ -119,6 +123,118 @@ The lifecycle example deliberately binds to loopback. To accept remote clients,
 use `server.ListenAndServeTLS(certFile, keyFile)` with a valid certificate or
 mount the handler behind a TLS-terminating reverse proxy. Never send the bearer
 token over plaintext non-loopback HTTP.
+
+## Host-owned access
+
+`AccessController` is the fine-grained embedding seam. Kata calls it after a
+route matches and before protected data is returned or changed. The request
+contains the opaque authenticated subject, the actor snapshot used for new
+event and projection rows, and the matched operation ID, method, path template,
+and path parameters. `Operation.ProjectIDs`, `ProjectUIDs`, and `AllProjects`
+carry the validated effective project scope. Cross-project operations include
+both projects; omitting the project filter from the event stream sets
+`AllProjects` instead of silently broadening an empty scope. Body- and
+query-selected projects are decoded and validated before this decision. When
+an operation discovers another project while resolving a link, UID, or graph,
+Kata asks again with the expanded scope before returning or changing protected
+data. Controllers should therefore make retry-safe decisions from the complete
+request rather than treating a call as a one-time notification. Global
+operations set `AllProjects` explicitly. Operations such as purge, close,
+imports, ready selection, UID-prefix lookup, event feeds, close audits, and
+project digests also require `AllProjects` because their results or side effects
+can depend on relationships outside the project named in the URL. Parent-link
+changes and deletion by a global link ID use the same conservative scope. The
+same applies to tolerant relationship removals, whose missing-target no-op
+must not reveal whether a target belongs to a denied project. The request
+deliberately contains no application roles or tenant model.
+
+For lease operations, Kata derives an opaque holder key from the stable
+`Principal.Subject`; a request-provided `holder` cannot select or impersonate
+another mounted caller. Subject bytes are compared exactly after rejecting
+empty or whitespace-only values, so the embedding host must provide one
+canonical subject representation. Subject ownership remains distinct when a
+spoke forwards a lease through its shared federation identity. Existing
+non-host lease clients keep their established holder and client-kind behavior;
+mounting a service does not rewrite their persisted ownership tuples. Host
+provenance is carried separately from those caller-visible strings, so
+reserved-looking holder or client-kind text cannot opt an ordinary client into
+mounted identity handling.
+`Principal.Actor` remains the human-readable audit snapshot for replica setup
+and other mutations.
+
+An embedding host typically mounts the service behind its ordinary session or
+credential middleware:
+
+```go
+service, err := kata.New(ctx, kata.Config{
+	DSN:    "/var/lib/example-app/kata.db",
+	Access: applicationAccessController,
+})
+if err != nil {
+	return err
+}
+
+handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	principal, err := authenticateApplicationRequest(r)
+	if err != nil {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	ctx := kata.WithPrincipal(r.Context(), kata.Principal{
+		Subject: principal.StableID,
+		Actor:   principal.DisplayName,
+	})
+	service.Handler().ServeHTTP(w, r.WithContext(ctx))
+})
+```
+
+The controller returns `kata.ErrAccessDenied` for a rejected operation. Kata
+answers with a generic not-found envelope so the response does not confirm that
+a protected resource exists. Other controller failures return a bounded
+service-unavailable envelope without exposing the underlying error.
+
+Long-lived operations require an `AccessLease` in the successful decision.
+Kata revalidates that lease before each event or heartbeat; a failed
+revalidation closes the stream before more protected data is written. Bounded
+requests may return a decision with no lease.
+
+The host-supplied actor always replaces an actor in request JSON. This keeps
+audit attribution tied to the authenticated principal rather than caller input.
+`Auth.TrustCallerAuthentication` preserves the older all-or-nothing trusted
+middleware mode; use `Config.Access` when projects or operations need distinct
+authorization decisions.
+
+Federation transport and lease routes may authenticate with Kata-managed,
+project-scoped bearer credentials. When such a request has no in-process host
+principal, Kata validates the scoped credential in the route and does not call
+the host controller. The outer server must preserve the `Authorization` header
+on those routes. A request without either an in-process principal or a scoped
+bearer credential remains unauthenticated.
+
+## Host-managed projects
+
+Applications that keep their own project catalog can establish one stable Kata
+project without calling the HTTP API internally:
+
+```go
+result, err := service.EnsureProject(ctx, kata.ProjectSpec{
+	UID:  "01HZNQ7VFPK1XGD8R5MABCD4EX",
+	Name: "example-host-project",
+})
+```
+
+`EnsureProject` is idempotent across processes. An exact UID-and-name match
+returns the existing numeric identity and history; a reused UID or name that
+points at a different project returns `kata.ErrProjectConflict`. The caller can
+therefore retry after an interrupted catalog update without creating a second
+project. Archived projects are returned as `kata.ProjectArchived` and are not
+silently reactivated.
+
+`ArchiveProject` retains that same UID, numeric identity, tasks, and events
+while removing the project from ordinary active reads. It is idempotent and
+requires an actor for the retained event history. These methods are in-process
+application methods: they do not authenticate a network caller and should be
+invoked only after the host has authorized its own catalog lifecycle change.
 
 ## Storage and PostgreSQL policy
 

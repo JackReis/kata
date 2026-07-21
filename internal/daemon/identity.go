@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"strings"
 
 	"go.kenn.io/kata/internal/api"
 	"go.kenn.io/kata/internal/db"
@@ -28,12 +29,16 @@ const (
 	// header (or its value is empty). Writes against this principal are
 	// rejected; reads pass through.
 	PrincipalTrustedProxyAbsent PrincipalKind = "trusted_proxy_absent"
+	// PrincipalHost is supplied in process by a mounted service's host access
+	// adapter. It never comes from a network header.
+	PrincipalHost PrincipalKind = "host"
 )
 
 // Principal is the request-local identity derived by auth middleware.
 type Principal struct {
 	Kind    PrincipalKind
 	Actor   string
+	Subject string
 	TokenID int64
 	Name    *string
 }
@@ -50,6 +55,12 @@ func WithPrincipal(ctx context.Context, p Principal) context.Context {
 func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 	p, ok := ctx.Value(principalContextKey{}).(Principal)
 	return p, ok
+}
+
+func validHostPrincipal(principal Principal) bool {
+	return principal.Kind == PrincipalHost &&
+		strings.TrimSpace(principal.Subject) != "" &&
+		strings.TrimSpace(principal.Actor) != ""
 }
 
 func withInsecureReadonlyRequest(ctx context.Context) context.Context {

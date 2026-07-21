@@ -3,6 +3,8 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,7 +84,7 @@ func registerClaimHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err := requireHubClaimBinding(ctx, cfg.DB, in.ProjectID); err != nil {
 			return nil, err
 		}
-		actor := strings.TrimSpace(in.Body.Actor)
+		actor := actorFor(ctx, strings.TrimSpace(in.Body.Actor))
 		if principal.IdentityToken {
 			actor = principal.Holder
 		}
@@ -347,6 +349,13 @@ func boundSpokeClaimPrincipal(binding db.FederationBinding, principal db.ClaimPr
 	actor := strings.TrimSpace(binding.Actor)
 	if actor == "" {
 		return principal
+	}
+	// Existing clients keep their established actor/client-kind identity.
+	// Mounted callers carry an opaque subject-bound identity through the shared
+	// spoke credential so one subject cannot control another subject's lease.
+	if principal.AuthenticatedHost {
+		ownerDigest := sha256.Sum256([]byte("kata:spoke-host-claim-owner:v1\x00" + principal.Holder))
+		principal.ClientKind = "spoke-host:v1:" + base64.RawURLEncoding.EncodeToString(ownerDigest[:])
 	}
 	principal.Holder = actor
 	return principal

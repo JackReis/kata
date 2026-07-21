@@ -88,6 +88,10 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, err
 		}
+		ctx, err = authorizeHostProjectScope(ctx, issueProjectIDs(linkTargets), nil, false)
+		if err != nil {
+			return nil, err
+		}
 
 		// Validate priority before the idempotency lookup so an out-of-range
 		// value is rejected with a 400 instead of being silently absorbed by a
@@ -241,7 +245,7 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		issueOuts, err := hydrateIssueOuts(ctx, cfg.DB, in.ProjectID, issues)
 		out := &api.ListIssuesResponse{}
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, internalAPIError(err)
 		}
 		out.Body.Issues = issueOuts
 		return out, nil
@@ -262,6 +266,15 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if in.ProjectID < 0 {
 			return nil, api.NewError(400, "validation",
 				"project_id must be a positive integer", "", nil)
+		}
+		var projectIDs []int64
+		if in.ProjectID > 0 {
+			projectIDs = []int64{in.ProjectID}
+		}
+		var err error
+		ctx, err = authorizeHostProjectScope(ctx, projectIDs, nil, in.ProjectID == 0)
+		if err != nil {
+			return nil, err
 		}
 		if in.ProjectID > 0 {
 			if _, err := activeProjectByID(ctx, cfg.DB, in.ProjectID); err != nil {
@@ -288,7 +301,7 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 		}
 		issueOuts, err := hydrateIssueOutsCrossProject(ctx, cfg.DB, issues)
 		if err != nil {
-			return nil, api.NewError(500, "internal", err.Error(), "", nil)
+			return nil, internalAPIError(err)
 		}
 		out := &api.ListIssuesResponse{}
 		out.Body.Issues = issueOuts
@@ -321,6 +334,10 @@ func registerIssuesHandlers(humaAPI huma.API, cfg ServerConfig) {
 			include = db.IncludeDeletedYes
 		}
 		issue, err := resolveIssueByUIDOrPrefix(ctx, cfg.DB, in.UID, include)
+		if err != nil {
+			return nil, err
+		}
+		ctx, err = authorizeHostProjectScope(ctx, []int64{issue.ProjectID}, nil, false)
 		if err != nil {
 			return nil, err
 		}
@@ -401,6 +418,12 @@ func editIssueHandler(cfg ServerConfig) func(context.Context, *api.EditIssueRequ
 			if err := validateLinksDelta(in.Body.LinksDelta); err != nil {
 				return nil, err
 			}
+			if linksDeltaRequiresAllProjectsBeforeResolution(in.Body.LinksDelta) {
+				ctx, err = authorizeHostProjectScope(ctx, nil, nil, true)
+				if err != nil {
+					return nil, err
+				}
+			}
 		}
 
 		params := db.EditIssueAtomicParams{
@@ -469,6 +492,20 @@ func editIssueHandler(cfg ServerConfig) func(context.Context, *api.EditIssueRequ
 		}
 		return out, nil
 	}
+}
+
+// linksDeltaRequiresAllProjectsBeforeResolution identifies relationship
+// changes whose target cannot be scoped safely after a lookup. Parent changes
+// inspect ancestry beyond the named target. Tolerant removals must treat a
+// missing target as a successful no-op, so mounted callers need complete
+// project authority before resolution to keep missing and denied targets
+// indistinguishable.
+func linksDeltaRequiresAllProjectsBeforeResolution(d *api.LinksDelta) bool {
+	if d == nil {
+		return false
+	}
+	return d.SetParent != nil || d.RemoveParent != nil ||
+		len(d.RemoveBlocks) > 0 || len(d.RemoveBlockedBy) > 0 || len(d.RemoveRelated) > 0
 }
 
 // linksDeltaRequestsAnyOp reports whether the delta carries at least one
@@ -638,6 +675,14 @@ func requireFederatedLinksDeltaClaims(
 	return requireFederatedLinkClaims(ctx, cfg, actor, issues...)
 }
 
+func issueProjectIDs(issues []db.Issue) []int64 {
+	projectIDs := make([]int64, 0, len(issues))
+	for _, issue := range issues {
+		projectIDs = appendUniqueInt64(projectIDs, issue.ProjectID)
+	}
+	return projectIDs
+}
+
 // firstIDConflict reports the first int64 present in both slices.
 func firstIDConflict(adds, removes []int64) (int64, bool) {
 	if len(adds) == 0 || len(removes) == 0 {
@@ -748,7 +793,7 @@ func buildShowIssueResponse(ctx context.Context, cfg ServerConfig, issue db.Issu
 	}
 	links, err := loadLinkOuts(ctx, cfg.DB, issue.ID)
 	if err != nil {
-		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		return nil, internalAPIError(err)
 	}
 	labels, err := cfg.DB.LabelsByIssue(ctx, issue.ID)
 	if err != nil {
@@ -756,7 +801,7 @@ func buildShowIssueResponse(ctx context.Context, cfg ServerConfig, issue db.Issu
 	}
 	parent, err := loadParentRef(ctx, cfg.DB, issue)
 	if err != nil {
-		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		return nil, internalAPIError(err)
 	}
 	children, err := cfg.DB.ChildrenOfIssue(ctx, issue.ID)
 	if err != nil {
@@ -768,7 +813,7 @@ func buildShowIssueResponse(ctx context.Context, cfg ServerConfig, issue db.Issu
 	// prefix in qualified_id and its labels resolved against the wrong project.
 	childOuts, err := hydrateIssueOutsCrossProject(ctx, cfg.DB, children)
 	if err != nil {
-		return nil, api.NewError(500, "internal", err.Error(), "", nil)
+		return nil, internalAPIError(err)
 	}
 	out := &api.ShowIssueResponse{}
 	out.Body.Issue = issue
@@ -913,6 +958,10 @@ func (c *projectNames) name(ctx context.Context, id int64) (string, error) {
 	if n, ok := c.byID[id]; ok {
 		return n, nil
 	}
+	ctx, err := authorizeHostProjectScope(ctx, []int64{id}, nil, false)
+	if err != nil {
+		return "", err
+	}
 	p, err := c.store.ProjectByID(ctx, id)
 	if err != nil {
 		return "", err
@@ -983,6 +1032,10 @@ func collectLinkPeers(
 }
 
 func hydrateIssueOuts(ctx context.Context, store db.Storage, projectID int64, issues []db.Issue) ([]api.IssueOut, error) {
+	ctx, err := authorizeHostProjectScope(ctx, []int64{projectID}, nil, false)
+	if err != nil {
+		return nil, err
+	}
 	project, err := store.ProjectByID(ctx, projectID)
 	if err != nil {
 		return nil, err
@@ -1001,6 +1054,9 @@ func hydrateIssueOuts(ctx context.Context, store db.Storage, projectID int64, is
 	}
 	childCounts, err := store.ChildCountsByParents(ctx, ids)
 	if err != nil {
+		return nil, err
+	}
+	if err := authorizeHostChildProjects(ctx, store, issues, childCounts); err != nil {
 		return nil, err
 	}
 	blocks, err := store.BlockNumbersByIssues(ctx, ids)
@@ -1051,6 +1107,32 @@ func hydrateIssueOuts(ctx context.Context, store db.Storage, projectID int64, is
 		out[i] = row
 	}
 	return out, nil
+}
+
+// authorizeHostChildProjects expands the request scope to every project that
+// contributes to the child-count projection. Child links can cross project
+// boundaries even though the list itself is project-scoped.
+func authorizeHostChildProjects(
+	ctx context.Context,
+	store db.Storage,
+	issues []db.Issue,
+	counts map[int64]db.ChildCounts,
+) error {
+	projectIDs := make([]int64, 0)
+	for _, issue := range issues {
+		if counts[issue.ID].Total == 0 {
+			continue
+		}
+		children, err := store.ChildrenOfIssue(ctx, issue.ID)
+		if err != nil {
+			return err
+		}
+		for _, child := range children {
+			projectIDs = appendUniqueInt64(projectIDs, child.ProjectID)
+		}
+	}
+	_, err := authorizeHostProjectScope(ctx, projectIDs, nil, false)
+	return err
 }
 
 // peerSlice projects a slice of peer issue ids onto LinkPeer entries using

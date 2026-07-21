@@ -166,6 +166,19 @@ func registerFederationHandlers(humaAPI huma.API, cfg ServerConfig) {
 			return nil, api.NewError(http.StatusBadRequest, "validation",
 				"allow_adoption_snapshot_authors requires project_id", "", nil)
 		}
+		var projectIDs []int64
+		if in.Body.ProjectID != nil {
+			if *in.Body.ProjectID <= 0 {
+				return nil, api.NewError(http.StatusBadRequest, "validation",
+					"project_id must be a positive integer", "", nil)
+			}
+			projectIDs = []int64{*in.Body.ProjectID}
+		}
+		var err error
+		ctx, err = authorizeHostProjectScope(ctx, projectIDs, nil, in.Body.ProjectID == nil)
+		if err != nil {
+			return nil, err
+		}
 		actor, err := attributedActor(ctx, in.Body.Actor)
 		if err != nil {
 			return nil, err
@@ -239,9 +252,11 @@ func registerFederationHandlers(humaAPI huma.API, cfg ServerConfig) {
 		if in.Body.PushEnabled && !federationCapabilitiesContain(capabilities, "push") {
 			return nil, api.NewError(400, "federation_capability_mismatch", "push-enabled federation replica requires push capability", "", nil)
 		}
-		if err := db.ValidateTokenActor(in.Body.Actor); err != nil {
+		actor := actorFor(ctx, in.Body.Actor)
+		if err := db.ValidateTokenActor(actor); err != nil {
 			return nil, api.NewError(400, "validation", err.Error(), "", nil)
 		}
+		in.Body.Actor = strings.TrimSpace(actor)
 		if in.Body.AdoptExisting {
 			if !in.Body.PushEnabled {
 				return nil, api.NewError(400, "federation_capability_mismatch", "adopting an existing project requires push to be enabled", "", nil)

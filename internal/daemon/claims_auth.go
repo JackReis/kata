@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"strings"
@@ -17,6 +19,8 @@ type claimPrincipal struct {
 	IdentityToken bool
 }
 
+const hostClaimClientKind = "host:v1"
+
 func resolveClaimPrincipal(
 	ctx context.Context,
 	cfg ServerConfig,
@@ -26,6 +30,20 @@ func resolveClaimPrincipal(
 	allowEnrollment bool,
 	requireMutationLocal bool,
 ) (claimPrincipal, error) {
+	if cfg.HostAccess != nil {
+		if requestPrincipal, ok := PrincipalFromContext(ctx); ok {
+			if !validHostPrincipal(requestPrincipal) {
+				return claimPrincipal{}, api.NewError(http.StatusUnauthorized, "auth_required",
+					"valid host principal required", "", nil)
+			}
+			return hostClaimPrincipal(cfg, body, requestPrincipal.Subject), nil
+		}
+		if allowEnrollment && hasBearerHeader(authz) {
+			return resolveEnrollmentClaimPrincipal(ctx, cfg, projectID, authz, body)
+		}
+		return claimPrincipal{}, api.NewError(http.StatusUnauthorized, "auth_required",
+			"host principal or scoped federation bearer required", "", nil)
+	}
 	if cfg.Auth.Token != "" {
 		if principal, ok, err := resolveLocalClaimPrincipal(ctx, cfg, authz, body, false); ok || err != nil {
 			return principal, err
@@ -52,6 +70,18 @@ func resolveClaimPrincipal(
 	return localClaimPrincipal(cfg, body), nil
 }
 
+func hostClaimPrincipal(cfg ServerConfig, body api.ClaimActionBody, subject string) claimPrincipal {
+	principal := localClaimPrincipalWithHolder(cfg, body, hostClaimHolder(subject))
+	principal.ClientKind = hostClaimClientKind
+	principal.AuthenticatedHost = true
+	return principal
+}
+
+func hostClaimHolder(subject string) string {
+	digest := sha256.Sum256([]byte("kata:host-claim-holder:v1\x00" + subject))
+	return "host:" + base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
 func resolveEnrollmentClaimPrincipal(
 	ctx context.Context,
 	cfg ServerConfig,
@@ -76,6 +106,21 @@ func authorizeClaimStatusRead(
 	projectID int64,
 	authz string,
 ) error {
+	if cfg.HostAccess != nil {
+		if requestPrincipal, ok := PrincipalFromContext(ctx); ok {
+			if validHostPrincipal(requestPrincipal) {
+				return nil
+			}
+			return api.NewError(http.StatusUnauthorized, "auth_required",
+				"valid host principal required", "", nil)
+		}
+		if hasBearerHeader(authz) {
+			_, err := authorizeFederationRequest(ctx, cfg.DB, authz, projectID, "claim")
+			return err
+		}
+		return api.NewError(http.StatusUnauthorized, "auth_required",
+			"host principal or scoped federation bearer required", "", nil)
+	}
 	if cfg.Auth.Token == "" {
 		if cfg.InsecureReadonly {
 			if !hasBearerHeader(authz) {

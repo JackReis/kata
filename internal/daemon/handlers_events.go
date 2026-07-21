@@ -240,8 +240,24 @@ func registerEventsStream(humaAPI huma.API, cfg ServerConfig) {
 		if err != nil {
 			return nil, err
 		}
-		projectID, err := parseSSEProjectID(ctx, cfg, in.query)
+		projectID, err := parseSSEProjectID(in.query)
 		if err != nil {
+			return nil, err
+		}
+		var projectIDs []int64
+		if projectID > 0 {
+			projectIDs = []int64{projectID}
+		}
+		ctx, err = authorizeHostProjectScope(ctx, projectIDs, nil, projectID == 0)
+		if err != nil {
+			return nil, err
+		}
+		if projectID > 0 {
+			if _, err := activeProjectByID(ctx, cfg.DB, projectID); err != nil {
+				return nil, err
+			}
+		}
+		if err := requireHostAccessLease(ctx); err != nil {
 			return nil, err
 		}
 
@@ -304,6 +320,9 @@ func runSSEStream(hctx huma.Context, cfg ServerConfig, cursor, projectID int64) 
 		return
 	}
 	if resetTo > 0 {
+		if revalidateHostAccess(ctx) != nil {
+			return
+		}
 		writeResetFrame(w, resetTo)
 		flusher.Flush()
 		return
@@ -317,6 +336,9 @@ func runSSEStream(hctx huma.Context, cfg ServerConfig, cursor, projectID int64) 
 	}
 
 	if len(rows) == sseDrainCap+1 {
+		if revalidateHostAccess(ctx) != nil {
+			return
+		}
 		writeResetFrame(w, hwm)
 		flusher.Flush()
 		return
@@ -324,6 +346,9 @@ func runSSEStream(hctx huma.Context, cfg ServerConfig, cursor, projectID int64) 
 
 	lastSent := cursor
 	for _, ev := range rows {
+		if revalidateHostAccess(ctx) != nil {
+			return
+		}
 		writeEventFrame(w, ev)
 		flusher.Flush()
 		lastSent = ev.ID
@@ -374,7 +399,7 @@ func parseNonNegativeInt64(raw, name string) (int64, error) {
 	return n, nil
 }
 
-func parseSSEProjectID(ctx context.Context, cfg ServerConfig, query map[string][]string) (int64, error) {
+func parseSSEProjectID(query map[string][]string) (int64, error) {
 	pidStr := ""
 	if vs, ok := query["project_id"]; ok && len(vs) > 0 {
 		pidStr = vs[0]
@@ -386,12 +411,6 @@ func parseSSEProjectID(ctx context.Context, cfg ServerConfig, query map[string][
 	if err != nil || n <= 0 {
 		return 0, api.NewError(400, "validation",
 			"project_id must be a positive integer", "", nil)
-	}
-	// Mirror the polling endpoint contract: an unknown positive project_id is
-	// project_not_found, not an idle 200 stream. Archived projects are also
-	// treated as not-found.
-	if _, err := activeProjectByID(ctx, cfg.DB, n); err != nil {
-		return 0, err
 	}
 	return n, nil
 }
@@ -423,6 +442,9 @@ func runLivePhase(ctx context.Context, deps livePhaseDeps, projectID, lastSent i
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if revalidateHostAccess(ctx) != nil {
+				return
+			}
 			if _, err := io.WriteString(deps.w, ": keepalive\n\n"); err != nil {
 				return
 			}
@@ -433,6 +455,9 @@ func runLivePhase(ctx context.Context, deps livePhaseDeps, projectID, lastSent i
 			}
 			switch msg.Kind {
 			case "reset":
+				if revalidateHostAccess(ctx) != nil {
+					return
+				}
 				writeResetFrame(deps.w, msg.ResetID)
 				deps.flusher.Flush()
 				return
@@ -452,6 +477,9 @@ func runLivePhase(ctx context.Context, deps livePhaseDeps, projectID, lastSent i
 					return
 				}
 				if resetTo > 0 {
+					if revalidateHostAccess(ctx) != nil {
+						return
+					}
 					writeResetFrame(deps.w, resetTo)
 					deps.flusher.Flush()
 					return
@@ -472,6 +500,9 @@ func runLivePhase(ctx context.Context, deps livePhaseDeps, projectID, lastSent i
 						return
 					}
 					for _, ev := range rows {
+						if revalidateHostAccess(ctx) != nil {
+							return
+						}
 						writeEventFrame(deps.w, ev)
 						deps.flusher.Flush()
 						lastSent = ev.ID
