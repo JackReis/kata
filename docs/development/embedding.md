@@ -130,7 +130,15 @@ token over plaintext non-loopback HTTP.
 route matches and before protected data is returned or changed. The request
 contains the opaque authenticated subject, the actor snapshot used for new
 event and projection rows, and the matched operation ID, method, path template,
-and path parameters. `Operation.ProjectIDs`, `ProjectUIDs`, and `AllProjects`
+path parameters, and Kata's operation policy. The policy contains a stable
+domain kind, the required product-neutral `read`, `write`, `manage`, or
+`federate` capability, and explicit mutation and long-lived-response flags.
+Hosts map those capability classes to their own roles; they do not need to
+infer policy from operation names or HTTP verbs. Kata's registration test fails
+if a new route has no policy, and host-access mode fails closed if metadata is
+unavailable.
+
+`Operation.ProjectIDs`, `ProjectUIDs`, and `AllProjects`
 carry the validated effective project scope. Cross-project operations include
 both projects; omitting the project filter from the event stream sets
 `AllProjects` instead of silently broadening an empty scope. Body- and
@@ -198,6 +206,29 @@ Kata revalidates that lease before each event or heartbeat; a failed
 revalidation closes the stream before more protected data is written. Bounded
 requests may return a decision with no lease.
 
+Return a `TransactionFence` with every successful decision. Kata invokes it
+only when handling the operation begins a writable SQLite or PostgreSQL
+transaction, before the first domain write. This also covers read operations
+that perform transactional maintenance, while explicitly read-only snapshots
+remain outside the mutation fence. SQL locks acquired by the callback are
+therefore held through the domain commit or rollback; the callback must not
+commit or roll back the supplied transaction itself. Returning
+`ErrAccessDenied` rolls the mutation back and produces the same generic
+not-found response as an initial authorization denial. Other failures roll
+back and make only the mounted service temporarily unavailable. A missing
+fence fails closed before writing.
+
+Serializable transactions may retry, so a fence must be safe to invoke once
+per transaction attempt. The transaction exposes only `ExecContext` and
+`QueryRowContext`, which is enough to call a fixed host-owned validation
+function without exposing Kata's internal storage packages.
+
+When `Config.Access` is set, also configure `WorkerTransactionFence`. Kata
+applies it to every writable transaction started by the federation, GitHub
+sync, and timed-claim workers. A rejection rolls the transaction back, cancels
+all service workers, and is returned by `Run`; it cannot be reduced to a logged
+retry while stale authority remains active.
+
 The host-supplied actor always replaces an actor in request JSON. This keeps
 audit attribution tied to the authenticated principal rather than caller input.
 `Auth.TrustCallerAuthentication` preserves the older all-or-nothing trusted
@@ -210,6 +241,32 @@ principal, Kata validates the scoped credential in the route and does not call
 the host controller. The outer server must preserve the `Authorization` header
 on those routes. A request without either an in-process principal or a scoped
 bearer credential remains unauthenticated.
+
+## Restricted embedding profile
+
+Use `EmbeddingProfileRestricted` when the mounting application owns project
+lifecycle, API-token administration, federation setup, and external issue-sync
+configuration:
+
+```go
+service, err := kata.New(ctx, kata.Config{
+	DSN:     "/var/lib/example-app/kata.db",
+	Access:  applicationAccessController,
+	Profile: kata.EmbeddingProfileRestricted,
+})
+```
+
+Restricted mode returns a generic not-found response for native project
+mutations, token administration, federation administration, and issue-sync
+administration. Rejection happens before host authorization or request-body
+processing. Project and task reads, ordinary task changes, event streams, and
+Kata-authenticated federation transport remain available under their normal
+access checks. The zero-value profile preserves the full standalone-compatible
+HTTP API.
+
+Use the in-process project lifecycle methods below instead of enabling native
+project administration in restricted mode. Later profile revisions may add
+more host-owned application methods without changing standalone defaults.
 
 ## Host-managed projects
 

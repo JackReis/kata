@@ -11,6 +11,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"go.kenn.io/kata/internal/api"
+	"go.kenn.io/kata/internal/db"
 )
 
 // ErrHostAccessDenied is the private adapter sentinel for a host decision that
@@ -27,6 +28,7 @@ type HostOperation struct {
 	ProjectIDs  []int64
 	ProjectUIDs []string
 	AllProjects bool
+	Policy      HostOperationPolicy
 }
 
 // HostAccessRequest contains only generic request identity and route facts.
@@ -38,7 +40,8 @@ type HostAccessRequest struct {
 
 // HostAccessDecision contains optional long-lived authorization state.
 type HostAccessDecision struct {
-	Revalidate func(context.Context) error
+	Revalidate       func(context.Context) error
+	TransactionFence db.TransactionFence
 }
 
 // HostAccessController is implemented by the public package adapter.
@@ -121,6 +124,13 @@ func withHostAccess(humaAPI huma.API, controller HostAccessController) {
 				PathParams: pathParams,
 			},
 		}
+		policy, ok := hostOperationPolicy(operation.OperationID)
+		if !ok {
+			writeHostAccessError(ctx, http.StatusServiceUnavailable,
+				"access_unavailable", "access decision unavailable")
+			return
+		}
+		request.Operation.Policy = policy
 		if projectID, ok := positiveProjectID(pathParams["project_id"]); ok {
 			request.Operation.ProjectIDs = []int64{projectID}
 		}
@@ -129,7 +139,7 @@ func withHostAccess(humaAPI huma.API, controller HostAccessController) {
 		}
 		state := &hostAccessState{controller: controller, request: request}
 		if hostAccessResolvedByHandler(operation.OperationID) {
-			next(huma.WithValue(ctx, hostAccessStateContextKey{}, state))
+			next(withHostAccessState(ctx, state))
 			return
 		}
 		if len(request.Operation.ProjectIDs) == 0 && !hostAccessOperationWithoutProjectData(operation.OperationID) {
@@ -148,8 +158,30 @@ func withHostAccess(humaAPI huma.API, controller HostAccessController) {
 		}
 		state.decision = decision
 		state.authorized = true
-		next(huma.WithValue(ctx, hostAccessStateContextKey{}, state))
+		next(withHostAccessState(ctx, state))
 	})
+}
+
+func withHostAccessState(ctx huma.Context, state *hostAccessState) huma.Context {
+	ctx = huma.WithValue(ctx, hostAccessStateContextKey{}, state)
+	fenced := db.WithTransactionFence(ctx.Context(), func(
+		fenceCtx context.Context,
+		transaction db.Transaction,
+	) error {
+		if !state.authorized || state.decision.TransactionFence == nil {
+			return api.NewError(http.StatusServiceUnavailable,
+				"access_unavailable", "transaction access decision unavailable", "", nil)
+		}
+		if err := state.decision.TransactionFence(fenceCtx, transaction); err != nil {
+			if errors.Is(err, ErrHostAccessDenied) {
+				return api.NewError(http.StatusNotFound, "not_found", "resource not found", "", nil)
+			}
+			return api.NewError(http.StatusServiceUnavailable,
+				"access_unavailable", "transaction access decision unavailable", "", nil)
+		}
+		return nil
+	})
+	return huma.WithContext(ctx, fenced)
 }
 
 func hostSelfAuthenticatedOperation(operationID string) bool {
@@ -302,6 +334,13 @@ func authorizeHostHTTP(
 			"authentication_required", "authentication required")
 		return false
 	}
+	policy, ok := hostOperationPolicy(operation.ID)
+	if !ok {
+		api.WriteEnvelope(w, http.StatusServiceUnavailable,
+			"access_unavailable", "access decision unavailable")
+		return false
+	}
+	operation.Policy = policy
 	_, err := controller.Authorize(r.Context(), HostAccessRequest{
 		Subject: principal.Subject, Actor: principal.Actor, Operation: operation,
 	})
