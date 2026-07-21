@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/kata/internal/testfix"
 )
 
 func pingingServer(t *testing.T) *httptest.Server {
@@ -770,11 +772,15 @@ url = "`+srv.URL+`"
 // a freshly cloned repo has .git but not yet .kata.toml; a developer
 // can still drop a .kata.local.toml beside .git to point at a remote
 // daemon for the upcoming `kata init`.
+//
+// Uses a real repo (not a fake empty .git dir): the provenance guard now
+// consults git inside a worktree, and a freshly cloned repo has a valid .git
+// where `git ls-files` succeeds and reports the untracked local config as
+// untracked — so it is honored, mirroring the real pre-init flow.
 func TestResolveRemote_GitMarkerCountsAsWorkspace(t *testing.T) {
 	srv := pingingServer(t)
 	t.Setenv("KATA_SERVER", "")
-	dir := t.TempDir()
-	require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755)) //nolint:gosec // test fixture under TempDir
+	dir := testfix.InitGitRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
 		[]byte(`version = 1
 [server]
@@ -785,6 +791,307 @@ url = "`+srv.URL+`"
 	url, ok, err := resolveRemote(context.Background(), "")
 	require.NoError(t, err)
 	assert.True(t, ok)
+	assert.Equal(t, srv.URL, url)
+}
+
+// TestResolveRemote_TrackedFileNotHonored covers the credential-misrouting
+// fix: a .kata.local.toml that a hostile contributor force-committed past
+// the gitignore has attacker-controlled provenance, so its [server].url
+// override must NOT be honored even though the URL is reachable. Without the
+// provenance guard, resolution would return the committed URL and the CLI
+// would attach the victim's global bearer token to it.
+func TestResolveRemote_TrackedFileNotHonored(t *testing.T) {
+	srv := pingingServer(t) // reachable: proves refusal is provenance-based, not a probe failure
+	t.Setenv("KATA_SERVER", "")
+	t.Setenv("KATA_AUTH_TOKEN", "victim-global-token")
+	dir := testfix.InitGitRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "`+srv.URL+`"
+`), 0o600))
+	// Force-commit past the gitignore, mirroring `git add -f`.
+	testfix.RunGit(t, dir, "add", "-f", ".kata.local.toml")
+	testfix.RunGit(t, dir, "commit", "--quiet", "-m", "plant local config")
+	t.Chdir(dir)
+
+	url, ok, err := resolveRemote(context.Background(), "")
+	require.NoError(t, err)
+	assert.False(t, ok, "a git-tracked .kata.local.toml must not be honored as a server override")
+	assert.Empty(t, url)
+	assert.NotEqual(t, srv.URL, url)
+}
+
+// TestResolveRemote_UntrackedFileHonoredInGitRepo guards the legitimate
+// developer workflow: a gitignored (untracked) .kata.local.toml inside a real
+// git repo pointing at the developer's own remote daemon must still resolve.
+// The provenance guard only refuses tracked files.
+func TestResolveRemote_UntrackedFileHonoredInGitRepo(t *testing.T) {
+	srv := pingingServer(t)
+	t.Setenv("KATA_SERVER", "")
+	dir := testfix.InitGitRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"),
+		[]byte(".kata.local.toml\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "`+srv.URL+`"
+`), 0o600))
+	t.Chdir(dir)
+
+	url, ok, err := resolveRemote(context.Background(), "")
+	require.NoError(t, err)
+	assert.True(t, ok, "an untracked/gitignored .kata.local.toml must remain honored")
+	assert.Equal(t, srv.URL, url)
+}
+
+// TestRemoteAllowInsecureForBaseURL_TrackedFileDenied covers the plaintext
+// vector: a tracked .kata.local.toml cannot grant allow_insecure for its URL,
+// so the CLI will not downgrade the bearer-token transport to cleartext toward
+// an attacker-chosen host.
+func TestRemoteAllowInsecureForBaseURL_TrackedFileDenied(t *testing.T) {
+	t.Setenv("KATA_SERVER", "")
+	dir := testfix.InitGitRepo(t)
+	const baseURL = "http://198.51.100.1:7777" // TEST-NET-3, never dialed
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "`+baseURL+`"
+allow_insecure = true
+`), 0o600))
+	testfix.RunGit(t, dir, "add", "-f", ".kata.local.toml")
+	testfix.RunGit(t, dir, "commit", "--quiet", "-m", "plant local config")
+	t.Chdir(dir)
+
+	assert.False(t, remoteAllowInsecureForBaseURL(baseURL, ""),
+		"a tracked .kata.local.toml must not grant allow_insecure for its URL")
+}
+
+// TestLocalConfigTracked_CaseVariantCommittedRefused hardens the provenance
+// guard against a case-insensitive-filesystem bypass. On macOS/APFS a
+// committed `.KATA.LOCAL.TOML` is opened by findLocalConfig's lowercase stat,
+// so its [server].url would be applied; the guard must therefore recognize it
+// as tracked regardless of case. The check must not lean on git's
+// core.ignorecase, so the repo pins it false and commits the uppercase name:
+// a lowercase-pathspec lookup would miss it, but the guard must still refuse.
+//
+// This exercises localConfigTrackState directly because the end-to-end
+// resolveRemote manifestation only reproduces on a case-insensitive FS (the
+// lowercase os.Stat in findLocalConfig cannot open the uppercase file on the
+// case-sensitive Linux CI host); the guard function is the seam where the
+// break is deterministically observable everywhere.
+func TestLocalConfigTracked_CaseVariantCommittedRefused(t *testing.T) {
+	dir := testfix.InitGitRepo(t)
+	testfix.RunGit(t, dir, "config", "core.ignorecase", "false")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".KATA.LOCAL.TOML"),
+		[]byte(`version = 1
+[server]
+url = "http://198.51.100.1:7777"
+`), 0o600))
+	testfix.RunGit(t, dir, "add", "-f", ".KATA.LOCAL.TOML")
+	testfix.RunGit(t, dir, "commit", "--quiet", "-m", "plant case-variant config")
+
+	tracked, determined := localConfigTrackState(dir)
+	assert.True(t, determined, "a working git query must yield a determined result")
+	assert.True(t, tracked,
+		"a committed case-variant .kata.local.toml must be treated as tracked")
+}
+
+// TestLocalConfigTracked_UntrackedNotRefused pins the legitimate path at the
+// same seam: an untracked lowercase file is not in the git index, so the guard
+// must report it not-tracked (honored).
+func TestLocalConfigTracked_UntrackedNotRefused(t *testing.T) {
+	dir := testfix.InitGitRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "http://198.51.100.1:7777"
+`), 0o600))
+
+	tracked, determined := localConfigTrackState(dir)
+	assert.True(t, determined, "a working git query must yield a determined result")
+	assert.False(t, tracked,
+		"an untracked .kata.local.toml must not be treated as tracked")
+}
+
+// TestLocalConfigTracked_SubdirSameNameNotRoot pins the scoping contract of the
+// `:(icase)` pathspec query: a tracked .kata.local.toml committed in a
+// subdirectory must not make the workspace root look tracked. Root here has
+// only an untracked file, so the guard must report determined + untracked
+// (honored) — not tracked because of the nested committed file.
+func TestLocalConfigTracked_SubdirSameNameNotRoot(t *testing.T) {
+	dir := testfix.InitGitRepo(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o755)) //nolint:gosec // test fixture under TempDir
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", ".kata.local.toml"),
+		[]byte("version = 1\n"), 0o600))
+	testfix.RunGit(t, dir, "add", "-f", "sub/.kata.local.toml")
+	testfix.RunGit(t, dir, "commit", "--quiet", "-m", "nested config")
+	// Untracked file at root — the candidate findLocalConfig would honor.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
+		[]byte("version = 1\n"), 0o600))
+
+	tracked, determined := localConfigTrackState(dir)
+	assert.True(t, determined)
+	assert.False(t, tracked,
+		"a committed config in a subdirectory must not mark the root as tracked")
+}
+
+// failingGitRunner stands in for a git binary that is missing, broken, or
+// hangs past the timeout. It never inspects args; the point is the error.
+type failingGitRunner struct{ err error }
+
+func (f failingGitRunner) Output(_ context.Context, _ string, _ ...string) ([]byte, error) {
+	return nil, f.err
+}
+
+// stubGitRunner swaps the package git runner for the duration of the test so
+// the fail-closed path is exercised without a real 5s timeout or a broken git.
+func stubGitRunner(t *testing.T, r gitOutputRunner) {
+	t.Helper()
+	saved := localConfigGitRunner
+	localConfigGitRunner = r
+	t.Cleanup(func() { localConfigGitRunner = saved })
+}
+
+// fixedGitRunner returns canned NUL-delimited ls-files output, letting a test
+// pin how the tracked-status parser reacts to a specific git output shape.
+type fixedGitRunner struct{ out string }
+
+func (f fixedGitRunner) Output(_ context.Context, _ string, _ ...string) ([]byte, error) {
+	return []byte(f.out), nil
+}
+
+// TestLocalConfigTrackState_RepoRelativeMatchTracked pins the tracked verdict
+// against git output that reports the matched file as a repo-relative path
+// (e.g. "workspaces/app/.kata.local.toml") rather than cwd-relative. The
+// :(icase) pathspec only ever matches the root-level file — never a nested
+// same-named file — so any returned entry is that file regardless of how git
+// prints the path. Comparing the basename (not rejecting any entry containing
+// a slash) keeps a committed override in a nested workspace recognized as
+// tracked; the slash-rejecting form silently treated it as untracked and
+// honored the redirect.
+func TestLocalConfigTrackState_RepoRelativeMatchTracked(t *testing.T) {
+	stubGitRunner(t, fixedGitRunner{out: "workspaces/app/.kata.local.toml\x00"})
+	tracked, determined := localConfigTrackState("/repo/workspaces/app")
+	assert.True(t, determined, "a successful git query is determined")
+	assert.True(t, tracked,
+		"a matched root-level override must be tracked even when git prints a repo-relative path")
+}
+
+// TestResolveRemote_GitQueryFailureInWorktreeErrors covers the fail-open
+// escalation: a hostile repo commits an evil override and then induces the
+// tracked-status git query to fail (huge index blows the timeout, or a
+// dubious-ownership checkout git refuses). Because we are demonstrably inside a
+// git worktree, the unverifiable file must be refused, not honored — otherwise
+// the victim's global bearer token is routed to the committed URL. The server
+// is reachable so a pass could only come from honoring the file.
+//
+// Refusal must surface as an error, not a silent fall-through: the file may
+// equally be a developer's legitimate override, and treating a transient git
+// failure as "no override" would silently reroute a state-changing command to
+// an active or auto-started local daemon.
+func TestResolveRemote_GitQueryFailureInWorktreeErrors(t *testing.T) {
+	srv := pingingServer(t)
+	t.Setenv("KATA_SERVER", "")
+	t.Setenv("KATA_AUTH_TOKEN", "victim-global-token")
+	dir := testfix.InitGitRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "`+srv.URL+`"
+`), 0o600))
+	testfix.RunGit(t, dir, "add", "-f", ".kata.local.toml")
+	testfix.RunGit(t, dir, "commit", "--quiet", "-m", "plant evil override")
+	t.Chdir(dir)
+	stubGitRunner(t, failingGitRunner{err: errors.New("git unavailable")})
+
+	url, ok, err := resolveRemote(context.Background(), "")
+	require.Error(t, err,
+		"unverifiable tracked status inside a git worktree must error, not fall through to another daemon")
+	assert.Contains(t, err.Error(), ".kata.local.toml")
+	assert.False(t, ok)
+	assert.Empty(t, url)
+}
+
+// TestResolveRemote_SymlinkedWorkspaceGitFailureRefused closes the symlink
+// bypass of the fail-closed path: the workspace is anchored through a symlink
+// whose lexical parents contain no .git, while the physical target is a nested
+// workspace inside a git repo with a committed override. When the tracked-
+// status query fails, worktree detection must resolve symlinks and still
+// recognize the repo — otherwise the committed override lands in the
+// "no repo → honor" branch and the bearer token is misrouted.
+func TestResolveRemote_SymlinkedWorkspaceGitFailureRefused(t *testing.T) {
+	srv := pingingServer(t)
+	t.Setenv("KATA_SERVER", "")
+	t.Setenv("KATA_AUTH_TOKEN", "victim-global-token")
+	repo := testfix.InitGitRepo(t)
+	nested := filepath.Join(repo, "ws")
+	require.NoError(t, os.Mkdir(nested, 0o755)) //nolint:gosec // test fixture under TempDir
+	writeWorkspaceMarker(t, nested)
+	require.NoError(t, os.WriteFile(filepath.Join(nested, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "`+srv.URL+`"
+`), 0o600))
+	testfix.RunGit(t, repo, "add", "-f", "ws/.kata.local.toml")
+	testfix.RunGit(t, repo, "commit", "--quiet", "-m", "plant nested override")
+	link := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(nested, link))
+	stubGitRunner(t, failingGitRunner{err: errors.New("git unavailable")})
+
+	url, ok, err := resolveRemote(context.Background(), link)
+	require.Error(t, err,
+		"a symlinked workspace physically inside a git repo must not dodge the fail-closed path")
+	assert.Contains(t, err.Error(), ".kata.local.toml")
+	assert.False(t, ok)
+	assert.Empty(t, url)
+}
+
+// TestResolveRemote_SymlinkedNonRepoWorkspaceGitFailureHonored guards the
+// legitimate side of the symlink fix: a workspace reached through a symlink
+// whose physical target is genuinely outside any git repo has no notion of
+// tracking, so its local config must still be honored when git is unavailable.
+func TestResolveRemote_SymlinkedNonRepoWorkspaceGitFailureHonored(t *testing.T) {
+	srv := pingingServer(t)
+	t.Setenv("KATA_SERVER", "")
+	dir := t.TempDir()
+	writeWorkspaceMarker(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "`+srv.URL+`"
+`), 0o600))
+	link := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(dir, link))
+	stubGitRunner(t, failingGitRunner{err: errors.New("not a git repository")})
+
+	url, ok, err := resolveRemote(context.Background(), link)
+	require.NoError(t, err)
+	assert.True(t, ok, "a symlinked non-repo workspace must still honor its local config")
+	assert.Equal(t, srv.URL, url)
+}
+
+// TestResolveRemote_GitQueryFailureNonRepoHonored guards the legitimate
+// non-git workspace: a bare directory anchored only by .kata.toml (no .git
+// anywhere up the tree) has no notion of tracking, so an untracked
+// .kata.local.toml must still be honored even though the git query yields no
+// determined answer. This keeps kata usable without git in a non-repo project.
+func TestResolveRemote_GitQueryFailureNonRepoHonored(t *testing.T) {
+	srv := pingingServer(t)
+	t.Setenv("KATA_SERVER", "")
+	dir := t.TempDir()
+	writeWorkspaceMarker(t, dir) // .kata.toml boundary, no .git
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kata.local.toml"),
+		[]byte(`version = 1
+[server]
+url = "`+srv.URL+`"
+`), 0o600))
+	t.Chdir(dir)
+	stubGitRunner(t, failingGitRunner{err: errors.New("not a git repository")})
+
+	url, ok, err := resolveRemote(context.Background(), "")
+	require.NoError(t, err)
+	assert.True(t, ok, "a non-repo workspace with no .git must honor its untracked local config")
 	assert.Equal(t, srv.URL, url)
 }
 
