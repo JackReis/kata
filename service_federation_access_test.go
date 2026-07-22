@@ -12,10 +12,12 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/kata"
+	"go.kenn.io/kata/internal/db"
 )
 
 type recordingFederationAccessController struct {
@@ -326,6 +328,210 @@ func TestServiceFederationAccessRunsBothMutationFencesInOrder(t *testing.T) {
 	assert.Equal(t, []string{"ordinary", "federation"}, calls)
 }
 
+func TestServiceFederationIngestRunsBothMutationFencesInOrder(t *testing.T) {
+	var calls []string
+	access := &recordingAccessController{transactionFence: func(context.Context, kata.Transaction) error {
+		calls = append(calls, "ordinary")
+		return nil
+	}}
+	federation := &recordingFederationAccessController{
+		decide: func(request kata.FederationAccessRequest) (kata.FederationAccessDecision, error) {
+			decision := kata.FederationAccessDecision{}
+			if request.Operation.Mutation {
+				decision.TransactionFence = func(context.Context, kata.Transaction) error {
+					calls = append(calls, "federation")
+					return nil
+				}
+			}
+			return decision, nil
+		},
+	}
+	service, project, enrollment, databasePath := newComposedFederationAccessService(t, access, federation)
+
+	response := ingestFederationIssueAsPrincipal(t, service, project, enrollment.Token)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.Equal(t, []string{"ordinary", "federation"}, calls)
+	assert.Equal(t, 1, storedFederationIssueCount(t, databasePath))
+}
+
+func TestServiceFederationIngestDenialRollsBackMutation(t *testing.T) {
+	var calls []string
+	access := &recordingAccessController{transactionFence: func(context.Context, kata.Transaction) error {
+		calls = append(calls, "ordinary")
+		return nil
+	}}
+	federation := &recordingFederationAccessController{
+		decide: func(request kata.FederationAccessRequest) (kata.FederationAccessDecision, error) {
+			decision := kata.FederationAccessDecision{}
+			if request.Operation.Mutation {
+				decision.TransactionFence = func(context.Context, kata.Transaction) error {
+					calls = append(calls, "federation")
+					return kata.ErrAccessDenied
+				}
+			}
+			return decision, nil
+		},
+	}
+	service, project, enrollment, databasePath := newComposedFederationAccessService(t, access, federation)
+
+	response := ingestFederationIssueAsPrincipal(t, service, project, enrollment.Token)
+
+	assert.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
+	assert.Equal(t, []string{"ordinary", "federation"}, calls)
+	assert.Zero(t, storedFederationIssueCount(t, databasePath))
+}
+
+func TestServiceFederationIngestReauthenticatesAfterBodyRead(t *testing.T) {
+	federation := &recordingFederationAccessController{decide: allowFederationMutation}
+	service, project, enrollment, databasePath := newComposedFederationAccessService(t, nil, federation)
+	body := &revokeEnrollmentOnRead{
+		reader: bytes.NewReader(federationIssueIngestBody(t, project)),
+		revoke: func() error {
+			return service.RevokeFederationEnrollment(t.Context(), project.UID, enrollment.Enrollment.ID)
+		},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+
+		strconv.FormatInt(project.ID, 10)+"/federation/events:ingest", body)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+enrollment.Token)
+	response := httptest.NewRecorder()
+
+	service.Handler().ServeHTTP(response, request)
+
+	require.NoError(t, body.err)
+	assert.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
+	assert.Contains(t, response.Body.String(), "auth_invalid")
+	assert.Zero(t, storedFederationIssueCount(t, databasePath))
+}
+
+func TestServiceFederationIngestHostDenialPrecedesFederationAuthorization(t *testing.T) {
+	access := &recordingAccessController{err: kata.ErrAccessDenied}
+	federation := &recordingFederationAccessController{decide: allowFederationMutation}
+	service, project, enrollment, databasePath := newComposedFederationAccessService(t, access, federation)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+
+		strconv.FormatInt(project.ID, 10)+"/federation/events:ingest",
+		bytes.NewReader(federationIssueIngestBody(t, project)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+enrollment.Token)
+	request = request.WithContext(kata.WithPrincipal(request.Context(), kata.Principal{
+		Subject: "denied-user", Actor: "Denied User",
+	}))
+	response := httptest.NewRecorder()
+
+	service.Handler().ServeHTTP(response, request)
+
+	assert.Equal(t, http.StatusNotFound, response.Code, response.Body.String())
+	assert.Empty(t, federation.snapshot(), "host denial must precede federation authorization")
+	assert.Zero(t, storedFederationIssueCount(t, databasePath))
+}
+
+func TestServiceFederationIngestOrdersNativeRevocationWithMutation(t *testing.T) {
+	var (
+		service    *kata.Service
+		project    kata.Project
+		enrollment kata.CreatedFederationEnrollment
+		calls      int
+		revokeErr  error
+	)
+	federation := &recordingFederationAccessController{
+		decide: func(request kata.FederationAccessRequest) (kata.FederationAccessDecision, error) {
+			calls++
+			if calls == 2 {
+				revokeErr = service.RevokeFederationEnrollment(
+					t.Context(), project.UID, enrollment.Enrollment.ID,
+				)
+			}
+			return allowFederationMutation(request)
+		},
+	}
+	var databasePath string
+	service, project, enrollment, databasePath = newComposedFederationAccessService(t, nil, federation)
+
+	response := ingestFederationIssueAsPrincipal(t, service, project, enrollment.Token)
+
+	require.NoError(t, revokeErr)
+	assert.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
+	assert.Zero(t, storedFederationIssueCount(t, databasePath))
+}
+
+type revokeEnrollmentOnRead struct {
+	once   sync.Once
+	reader *bytes.Reader
+	revoke func() error
+	err    error
+}
+
+func (b *revokeEnrollmentOnRead) Read(p []byte) (int, error) {
+	b.once.Do(func() { b.err = b.revoke() })
+	return b.reader.Read(p)
+}
+
+func ingestFederationIssueAsPrincipal(
+	t *testing.T,
+	service *kata.Service,
+	project kata.Project,
+	token string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	body := federationIssueIngestBody(t, project)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+
+		strconv.FormatInt(project.ID, 10)+"/federation/events:ingest", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+	request = request.WithContext(kata.WithPrincipal(request.Context(), kata.Principal{
+		Subject: "user-123", Actor: "Example User",
+	}))
+	response := httptest.NewRecorder()
+	service.Handler().ServeHTTP(response, request)
+	return response
+}
+
+func federationIssueIngestBody(t *testing.T, project kata.Project) []byte {
+	t.Helper()
+	createdAt := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	issueUID := "01HZNQ7VFPK1XGD8R5MABCD4EC"
+	payload := json.RawMessage(`{"uid":"01HZNQ7VFPK1XGD8R5MABCD4EC","short_id":"cd4ec","title":"remote work","body":"","author":"Example Operator","status":"open","metadata":{},"created_at":"2026-07-22T12:00:00.000Z"}`)
+	hash, err := db.EventContentHash(db.EventHashInput{
+		UID:               "01HZNQ7VFPK1XGD8R5MABCD4EB",
+		OriginInstanceUID: "01HZNQ7VFPK1XGD8R5MABCD4EA",
+		ProjectUID:        project.UID,
+		ProjectName:       project.Name,
+		IssueUID:          &issueUID,
+		Type:              "issue.created",
+		Actor:             "Example Operator",
+		HLCPhysicalMS:     1,
+		CreatedAt:         "2026-07-22T12:00:00.000Z",
+		Payload:           payload,
+	})
+	require.NoError(t, err)
+	body, err := json.Marshal(map[string]any{
+		"schema_version": db.CurrentSchemaVersion(),
+		"events": []map[string]any{{
+			"event_id": 17, "event_uid": "01HZNQ7VFPK1XGD8R5MABCD4EB",
+			"origin_instance_uid": "01HZNQ7VFPK1XGD8R5MABCD4EA",
+			"project_uid":         project.UID, "project_name": project.Name,
+			"issue_uid": issueUID, "type": "issue.created", "actor": "Example Operator",
+			"hlc_physical_ms": 1, "hlc_counter": 0, "content_hash": hash,
+			"payload": json.RawMessage(payload), "created_at": createdAt,
+		}},
+	})
+	require.NoError(t, err)
+	return body
+}
+
+func storedFederationIssueCount(t *testing.T, databasePath string) int {
+	t.Helper()
+	inspection, err := sql.Open("sqlite", databasePath)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, inspection.Close()) })
+	var count int
+	require.NoError(t, inspection.QueryRow(
+		`SELECT count(*) FROM issues WHERE uid = ?`, "01HZNQ7VFPK1XGD8R5MABCD4EC",
+	).Scan(&count))
+	return count
+}
+
 func newComposedFederationAccessService(
 	t *testing.T,
 	access kata.AccessController,
@@ -333,9 +539,11 @@ func newComposedFederationAccessService(
 ) (*kata.Service, kata.Project, kata.CreatedFederationEnrollment, string) {
 	t.Helper()
 	databasePath := filepath.Join(t.TempDir(), "service.db")
-	service, err := kata.New(context.Background(), kata.Config{
-		DSN: databasePath, Access: access, FederationAccess: federation,
-	})
+	config := kata.Config{DSN: databasePath, Access: access, FederationAccess: federation}
+	if access == nil {
+		config.Auth = kata.AuthConfig{TrustCallerAuthentication: true}
+	}
+	service, err := kata.New(context.Background(), config)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, service.Close()) })
 	project := ensureEnrollmentTestProject(
