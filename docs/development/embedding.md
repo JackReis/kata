@@ -237,10 +237,33 @@ authorization decisions.
 
 Federation transport and lease routes may authenticate with Kata-managed,
 project-scoped bearer credentials. When such a request has no in-process host
-principal, Kata validates the scoped credential in the route and does not call
-the host controller. The outer server must preserve the `Authorization` header
-on those routes. A request without either an in-process principal or a scoped
-bearer credential remains unauthenticated.
+principal, Kata validates the scoped credential in the route instead of calling
+the ordinary `AccessController`. The outer server must preserve the
+`Authorization` header on those routes. A request without either an in-process
+principal or a scoped bearer credential remains unauthenticated.
+
+Mounting applications that have additional credential-lifecycle rules can set
+`Config.FederationAccess`. Kata calls that controller only after its own token,
+project, and capability checks succeed. The request contains the retained
+enrollment without its token hash, the resolved project, the exact `pull`,
+`push`, or `claim` capability, and the stable operation ID. Returning
+`ErrAccessDenied` makes the otherwise valid credential unusable without
+disclosing which outside condition changed. Standalone behavior is unchanged
+when the controller is absent.
+
+Federation mutations require the controller to return a `TransactionFence`.
+Kata runs it inside the same storage transaction as event ingest or lease state,
+so a concurrent revocation is ordered with the protected write. A missing fence
+fails closed. Federation metadata and lease-status requests also require a fence
+because they may refresh baselines, expire claims, or update a spoke's cached
+lease state even though their HTTP method is `GET`. Tokenless lease-status reads
+remain available in explicitly trusted-caller mode; once a bearer credential is
+supplied, Kata authenticates and authorizes that credential. When a request
+carries both an in-process principal and a scoped federation credential, the
+ordinary host-access fence runs first and the federation fence runs only after
+it succeeds; neither authorization layer replaces the other. The callback
+follows the same retry and transaction rules as the ordinary host-access fence
+described above.
 
 ## Restricted embedding profile
 
