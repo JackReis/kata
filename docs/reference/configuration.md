@@ -207,6 +207,83 @@ query parameters before a DSN appears in daemon metadata, health output, import
 output, errors, or per-database namespace hashing. Use environment variables or
 secret-managed configuration rather than committing a credential-bearing DSN.
 
+### Declarative federation mappings
+
+A spoke daemon can enroll and adopt projects automatically at startup by
+mapping local project names to projects on remote daemon-catalog targets:
+
+```toml
+[[daemon]]
+name = "team-hub"
+url = "https://hub.example"
+token_env = "KATA_TEAM_HUB_TOKEN"
+
+[[federation.project]]
+hub = "team-hub"
+spoke_project = "spoke-project"
+hub_project = "hub-project"
+actor = "user-a"
+```
+
+`hub` names a remote `[[daemon]]` entry; its URL, authentication, and
+`allow_insecure` policy are reused without falling back to the spoke daemon's
+global bearer token. Prefer `token_env` so the hub administration credential
+does not appear in `config.toml`. An unset or empty selected `token_env` is a
+runtime authentication failure: the spoke stays available and retries without
+sending another credential.
+
+Each mapping ensures the named hub project and a `pull,push,lease` enrollment,
+then creates the local `spoke_project` if it is missing or adopts the existing
+standalone project. Enrollment credentials are generated automatically and
+stored in the spoke's owner-only federation credential store. A generated
+credential is durably reserved once under the resolved hub project UID before
+enrollment. When the hub authenticates the catalog bearer as a DB-backed
+identity token, that token's actor overrides the mapping's requested `actor`.
+Credential-file updates use a same-directory, failure-atomic replacement so a
+failed write cannot truncate the last readable credential set.
+
+If the named hub project is deleted and recreated, its UID changes. kata
+reports a conflict and does not silently enroll the replacement. The category
+is `configuration_conflict` before adoption and `binding_conflict` after the
+local project is bound.
+Run `kata federation leave <spoke-project>` to clear the old managed
+reservation, verify the mapping, and restart the daemon to enroll again.
+
+Mappings are loaded once when the daemon starts. Restart the daemon after
+adding or changing one. Reconciliation runs asynchronously: hub outages,
+authentication failures, and runtime conflicts do not delay daemon readiness
+or make `/health` unhealthy. Each mapping retries independently with
+exponential backoff from one second to a five-minute cap.
+
+Removing a mapping and restarting stops managing it; it does not detach the
+existing replica or revoke its hub enrollment. Teardown is always explicit:
+
+```sh
+kata federation leave spoke-project
+```
+
+Explicit leave also removes exact config-managed credential reservations left
+by an interrupted startup reconciliation, including reservations created
+before local adoption completed. Conflicting or manual credentials are retained
+and reported as cleanup errors instead of being deleted. If leave removes a
+reservation while hub enrollment or rotation is in flight, reconciliation
+compensates by revoking the completed enrollment rather than stranding it.
+Before contacting the hub, leave durably marks the reservation and drains any
+earlier reconciliation request. A completed enrollment ID remains recorded
+until local teardown finishes, so a retry or daemon restart can repeat the
+idempotent revoke. If a crash happens before that ID is recorded, reconciliation
+replays the reserved token to recover the exact enrollment and then revokes it.
+After leave completes, the mapping stays suppressed for the lifetime of that
+daemon process; restart when you deliberately want the configured mapping to
+enroll again.
+
+Structural mistakes still fail config loading, including missing fields, a hub
+that is not a remote catalog entry, duplicate `spoke_project` values, or two
+mappings that select the same canonical hub origin and hub project. `actor` is
+required and cannot be the reserved `bootstrap` identity, even when a
+DB-backed token identity will override the requested actor at reconciliation
+time.
+
 ## Token identity mode
 
 For a shared daemon where each user should have stable attribution:

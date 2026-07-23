@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -56,6 +57,10 @@ func resolveHubAdminAuth(cat *config.DaemonConfig, in hubAuthInputs) (hubAdminAu
 		out.token = in.hubToken
 		return out, nil
 	}
+	hubOrigin, err := config.CanonicalHTTPOrigin(out.url)
+	if err != nil {
+		return hubAdminAuth{}, fmt.Errorf("canonicalize spoke hub origin: %w", err)
+	}
 	if name := strings.TrimSpace(in.hubName); name != "" {
 		var e *config.CatalogDaemonConfig
 		if cat != nil {
@@ -69,7 +74,11 @@ func resolveHubAdminAuth(cat *config.DaemonConfig, in hubAuthInputs) (hubAdminAu
 				ExitCode: ExitValidation,
 			}
 		}
-		if strings.TrimRight(e.URL, "/") != out.url {
+		entryOrigin, err := config.CanonicalHTTPOrigin(e.URL)
+		if err != nil {
+			return hubAdminAuth{}, fmt.Errorf("canonicalize --hub %q catalog origin: %w", name, err)
+		}
+		if entryOrigin != hubOrigin {
 			return hubAdminAuth{}, &cliError{
 				Message: fmt.Sprintf(
 					"--hub %q resolves to %s, not this spoke's hub %s; refusing to send its admin token to a different origin (pass --hub-token to use an explicit token with this hub)",
@@ -88,7 +97,11 @@ func resolveHubAdminAuth(cat *config.DaemonConfig, in hubAuthInputs) (hubAdminAu
 		return out, nil
 	}
 	if cat != nil {
-		if e := catalogByURL(cat, out.url); e != nil {
+		e, err := catalogByOrigin(cat, hubOrigin, out.url)
+		if err != nil {
+			return hubAdminAuth{}, err
+		}
+		if e != nil {
 			token, err := selectedCatalogToken(e)
 			if err != nil {
 				return hubAdminAuth{}, err
@@ -137,16 +150,87 @@ func catalogByName(cat *config.DaemonConfig, name string) *config.CatalogDaemonC
 	return nil
 }
 
-func catalogByURL(cat *config.DaemonConfig, url string) *config.CatalogDaemonConfig {
-	if url == "" {
-		return nil
+func catalogByOrigin(
+	cat *config.DaemonConfig,
+	origin string,
+	targetURL string,
+) (*config.CatalogDaemonConfig, error) {
+	if origin == "" {
+		return nil, nil
 	}
+	targetBaseURL, err := canonicalHubBaseURL(targetURL)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize spoke hub URL: %w", err)
+	}
+	var originMatches []*config.CatalogDaemonConfig
+	var exactMatches []*config.CatalogDaemonConfig
 	for i := range cat.Daemons {
-		if strings.TrimRight(cat.Daemons[i].URL, "/") == url {
-			return &cat.Daemons[i]
+		if strings.TrimSpace(cat.Daemons[i].URL) == "" {
+			continue
+		}
+		entryOrigin, err := config.CanonicalHTTPOrigin(cat.Daemons[i].URL)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"canonicalize daemon catalog entry %q origin: %w",
+				cat.Daemons[i].Name, err,
+			)
+		}
+		if entryOrigin != origin {
+			continue
+		}
+		entry := &cat.Daemons[i]
+		originMatches = append(originMatches, entry)
+		entryBaseURL, err := canonicalHubBaseURL(entry.URL)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"canonicalize daemon catalog entry %q URL: %w",
+				entry.Name, err,
+			)
+		}
+		if entryBaseURL == targetBaseURL {
+			exactMatches = append(exactMatches, entry)
 		}
 	}
-	return nil
+	switch {
+	case len(exactMatches) == 1:
+		return exactMatches[0], nil
+	case len(exactMatches) > 1:
+		return nil, ambiguousHubCatalogOriginError()
+	case len(originMatches) == 1:
+		return originMatches[0], nil
+	case len(originMatches) > 1:
+		return nil, ambiguousHubCatalogOriginError()
+	default:
+		return nil, nil
+	}
+}
+
+func canonicalHubBaseURL(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", err
+	}
+	origin, err := config.CanonicalHTTPOrigin(raw)
+	if err != nil {
+		return "", err
+	}
+	baseURL := origin + strings.TrimRight(parsed.EscapedPath(), "/")
+	if parsed.ForceQuery || parsed.RawQuery != "" {
+		baseURL += "?" + parsed.RawQuery
+	}
+	if parsed.Fragment != "" {
+		baseURL += "#" + parsed.EscapedFragment()
+	}
+	return baseURL, nil
+}
+
+func ambiguousHubCatalogOriginError() error {
+	return &cliError{
+		Message:  "multiple daemon catalog entries match this hub origin; pass --hub to select one",
+		Code:     "hub_catalog_origin_ambiguous",
+		Kind:     kindValidation,
+		ExitCode: ExitValidation,
+	}
 }
 
 // hubAdminClient builds an HTTP client for the resolved hub admin auth.

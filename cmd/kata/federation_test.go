@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -788,6 +790,139 @@ func TestFederationEnrollHTTPClientAllowsExplicitInsecurePlaintext(t *testing.T)
 	require.NotNil(t, client)
 }
 
+func TestFederationEnrollHTTPClientNeverReplaysExplicitTokenCrossOrigin(t *testing.T) {
+	t.Setenv("KATA_HOME", t.TempDir())
+	t.Setenv("KATA_AUTH_TOKEN", "")
+	const enrollmentToken = "explicit-enrollment-secret"
+
+	for _, status := range []int{
+		http.StatusTemporaryRedirect,
+		http.StatusPermanentRedirect,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var (
+				mu             sync.Mutex
+				targetRequests int
+				targetBodies   []string
+			)
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				require.NoError(t, err)
+				mu.Lock()
+				targetRequests++
+				targetBodies = append(targetBodies, string(body))
+				mu.Unlock()
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(target.Close)
+
+			source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, target.URL+r.URL.Path, status) //nolint:gosec // test server intentionally redirects only to another local test server.
+			}))
+			t.Cleanup(source.Close)
+
+			client, err := federationEnrollHTTPClient(context.Background(), source.URL, true)
+			require.NoError(t, err)
+			_, _, err = httpDoJSON(
+				context.Background(),
+				client,
+				http.MethodPost,
+				source.URL+"/api/v1/federation/enrollments",
+				map[string]any{"token": enrollmentToken},
+			)
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), enrollmentToken)
+
+			mu.Lock()
+			defer mu.Unlock()
+			assert.Zero(t, targetRequests)
+			assert.Empty(t, targetBodies)
+		})
+	}
+}
+
+func TestFederationEnrollHTTPClientFollowsSameOriginRedirect(t *testing.T) {
+	t.Setenv("KATA_HOME", t.TempDir())
+	t.Setenv("KATA_AUTH_TOKEN", "")
+	const enrollmentToken = "explicit-enrollment-secret"
+
+	var redirectedBody struct {
+		Token string `json:"token"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/federation/enrollments":
+			http.Redirect(w, r, "/redirected-enrollment", http.StatusTemporaryRedirect)
+		case "/redirected-enrollment":
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&redirectedBody))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":71}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := federationEnrollHTTPClient(context.Background(), server.URL, true)
+	require.NoError(t, err)
+	status, _, err := httpDoJSON(
+		context.Background(),
+		client,
+		http.MethodPost,
+		server.URL+"/api/v1/federation/enrollments",
+		map[string]any{"token": enrollmentToken},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, status)
+	assert.Equal(t, enrollmentToken, redirectedBody.Token)
+}
+
+func TestFederationJoinEnrollmentBodyNeverCrossesRedirectOrigin(t *testing.T) {
+	for _, status := range []int{
+		http.StatusTemporaryRedirect,
+		http.StatusPermanentRedirect,
+	} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			testenv.New(t)
+			var targetRequests atomic.Int64
+			target := httptest.NewServer(http.HandlerFunc(func(
+				w http.ResponseWriter, _ *http.Request,
+			) {
+				targetRequests.Add(1)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer target.Close()
+			source := httptest.NewServer(http.HandlerFunc(func(
+				w http.ResponseWriter, r *http.Request,
+			) {
+				if r.URL.Path == "/api/v1/ping" {
+					_, _ = io.WriteString(
+						w, `{"ok":true,"service":"kata","version":"test"}`,
+					)
+					return
+				}
+				http.Redirect(w, r, target.URL+r.URL.Path, status) //nolint:gosec // Test server intentionally redirects only to another local test server.
+			}))
+			defer source.Close()
+			t.Setenv("KATA_SERVER", source.URL)
+
+			_, err := runCmdOutput(t, nil, "federation", "join",
+				"--project", "spoke-project",
+				"--hub-url", "https://daemon.example/hub",
+				"--hub-project-id", "42",
+				"--hub-project-uid", "01HZNQ7VFPK1XGD8R5MABCD4EG",
+				"--replay-horizon", "7",
+				"--token", "planted-enrollment-token",
+				"--actor", "user-a",
+				"--push")
+
+			require.Error(t, err)
+			assert.Zero(t, targetRequests.Load())
+			assert.NotContains(t, err.Error(), "planted-enrollment-token")
+		})
+	}
+}
+
 func TestResolveFederationProjectUsesProvidedClientForWorkspaceResolution(t *testing.T) {
 	resetFlags(t)
 	t.Setenv("KATA_AUTH_TOKEN", "hub-token")
@@ -1341,6 +1476,7 @@ type fakeLeaveHub struct {
 	// nil project scope (a global grant for the same spoke instance).
 	globalEnrollmentID int64
 	revokedIDs         []int64
+	onList             func()
 }
 
 func newFakeLeaveHub(t *testing.T, spokeInstanceUID string, hubProjectID int64) (*fakeLeaveHub, *httptest.Server) {
@@ -1351,6 +1487,9 @@ func newFakeLeaveHub(t *testing.T, spokeInstanceUID string, hubProjectID int64) 
 		case r.URL.Path == "/api/v1/ping":
 			_, _ = w.Write([]byte(`{"ok":true,"service":"kata","version":"test"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/federation/enrollments":
+			if h.onList != nil {
+				h.onList()
+			}
 			pid := h.hubProjectID
 			out := api.ListFederationEnrollmentsBody{Enrollments: []api.FederationEnrollmentOut{{
 				ID:               h.enrollmentID,
@@ -1914,6 +2053,45 @@ func TestFederationLeaveResumeWhenAlreadyStandalone(t *testing.T) {
 		assert.Contains(t, out, "already standalone")
 		assert.Equal(t, "missing", config.FederationCredentialMetadataFor(project.UID).Status,
 			"stale hub credential must be deleted by the resume path")
+	})
+
+	t.Run("plain leave revokes enrollment for pending managed reservation", func(t *testing.T) {
+		resetFlags(t)
+		env := testenv.New(t)
+		ctx := context.Background()
+		project, err := env.DB.CreateProject(ctx, "standalone-project")
+		require.NoError(t, err)
+		hub, hubServer := newFakeLeaveHub(t, env.DB.InstanceUID(), 42)
+		reservation := config.FederationManagedCredentialReservation{
+			ProjectUID: "01HZNQ7VFPK1XGD8R5MABCD4EX",
+			Credential: config.FederationCredential{
+				HubURL:           hubServer.URL,
+				HubProjectID:     42,
+				Token:            "pending-token",
+				Capabilities:     "pull,push",
+				Actor:            "user-a",
+				AllowInsecure:    true,
+				ManagedByConfig:  true,
+				SpokeProjectName: project.Name,
+			},
+		}
+		require.NoError(t, config.ReserveManagedFederationCredential(reservation))
+		hub.onList = func() {
+			current, found, readErr := config.FindManagedFederationCredential(project.Name)
+			require.NoError(t, readErr)
+			require.True(t, found)
+			assert.True(t, current.Credential.LeavePending,
+				"daemon must durably prepare leave before hub enumeration")
+		}
+
+		out := requireCmdOutput(t, env, "federation", "leave",
+			"--project", project.Name, "--yes")
+
+		assert.Contains(t, out, "already standalone")
+		assert.Equal(t, []int64{hub.enrollmentID}, hub.revokedIDs)
+		_, found, readErr := config.FindManagedFederationCredential(project.Name)
+		require.NoError(t, readErr)
+		assert.False(t, found)
 	})
 
 	t.Run("plain leave on no-binding project honors --json", func(t *testing.T) {

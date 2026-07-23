@@ -65,6 +65,84 @@ client-supplied actor strings such as `--actor`, `--as`, or `KATA_AUTHOR`.
 If you only have the bootstrap token, first mint a personal token as described
 in [Identity tokens](remote-daemon.md#identity-tokens).
 
+## Config-driven enrollment
+
+Operators who do not want to repeat the TUI or manual enroll/join ceremony can
+declare spoke-to-hub project mappings in the spoke's
+`<KATA_HOME>/config.toml`:
+
+```toml
+[[daemon]]
+name = "team-hub"
+url = "https://hub.example"
+token_env = "KATA_TEAM_HUB_TOKEN"
+
+[[federation.project]]
+hub = "team-hub"
+spoke_project = "spoke-project"
+hub_project = "hub-project"
+actor = "user-a"
+```
+
+Set `KATA_TEAM_HUB_TOKEN` in the spoke daemon's environment to a normal hub
+administration credential. The reconciler uses only the selected catalog
+entry's credential for that hub origin; it never substitutes the spoke
+daemon's global bearer token. If the selected token is a DB-backed identity
+token, the hub uses its identity as the enrollment and binding actor and
+ignores the configured actor value.
+
+On daemon start, the mapping ensures or creates `hub-project`, enables it for
+federation, creates a project-scoped `pull,push,lease` enrollment, and binds
+`spoke-project` with push enabled. A missing local project is created
+automatically; an existing standalone project is adopted. After ensuring the
+hub project, the spoke generates and durably reserves an enrollment secret
+under that hub project's UID when no compatible credential exists, then asks
+the hub to enroll it. The secret lives only in the owner-only federation
+credential file and is safely reused after a restart or lost response. Every
+credential mutation uses failure-atomic file replacement.
+
+The reservation is tied to the resolved hub UID. If a named hub project is
+deleted and recreated, the replacement has a different UID and reconciliation
+reports a conflict instead of silently enrolling it. Before local adoption the
+category is `configuration_conflict`; after binding it is `binding_conflict`. Run
+`kata federation leave <spoke-project>` to clear the old managed reservation,
+verify the mapping, and restart the daemon to enroll the intended project.
+
+Reconciliation starts in the background after storage and the federation
+runner are ready. The daemon listener and normal project work do not wait for
+the hub. Runtime failures are fail-open and each mapping retries independently,
+starting after one second and backing off to at most five minutes. Inspect the
+sanitized aggregate under `federation_config` in `GET /api/v1/health`;
+`ok` remains true during hub outages, authentication failures, and conflicts.
+An unset selected `token_env` is reported as `hub_authentication` and follows
+the same retry path.
+
+The config is startup-only. Restart the spoke daemon after adding or changing
+a mapping. Once a mapping succeeds it stays quiet until the next restart.
+Removing the mapping and restarting does not revoke the enrollment or convert
+the replica back to standalone; configuration removal is not teardown. Leave
+explicitly when that is the intended operation:
+
+```sh
+kata federation leave spoke-project
+```
+
+Leave also cleans up exact config-managed credential reservations from an
+interrupted startup reconciliation, before or after adoption. It fails closed
+and retains any conflicting or manual credential rather than deleting it. If a
+leave races with reconciliation while it is doing hub enrollment or rotation
+I/O, leave first records a durable leave marker and waits for the earlier
+request to finish. Reconciliation records and revokes any enrollment that
+completed, without recreating the credential that leave removes. The enrollment
+ID remains in the marker until local teardown, which makes a retry or restart
+safe. If the daemon crashed before recording the ID, it replays the reserved
+token to recover the exact enrollment and revoke it. A completed leave
+suppresses that mapping until the daemon restarts.
+
+See [Configuration](../reference/configuration.md#declarative-federation-mappings)
+for validation rules and [HTTP API schema](../reference/http-api.md#federation-enrollment-and-health-endpoints)
+for the health and credential-rotation contract.
+
 ## TUI enrollment workflow
 
 The TUI federation view is scoped to the active daemon. Press `F` from the
@@ -301,6 +379,11 @@ and the printed join command uses the hub-returned actor.
 The `--hub-url` value is the URL the spoke will store and use later for pull,
 push, and lease transport.
 
+Manual `--hub-url` values may include a reverse-proxy path prefix, such as
+`https://hub.example/kata`; the prefix is retained for later federation
+requests. They must be HTTP(S) base URLs without user info, a query, or a
+fragment.
+
 The CLI prints a pasteable `kata federation join ...` command containing the
 generated token. Treat that command as secret-bearing material.
 
@@ -413,6 +496,21 @@ By default this **detaches**: the local `federation_bindings`,
 credential is deleted, and all of the project's issues and current state are
 kept. Leaving is revoke-first — the hub enrollment is revoked before any local
 teardown, so a hub failure leaves local state intact for a clean retry.
+
+For config-driven federation, leave also removes the exact managed credential
+reservation whether reconciliation stopped before or after adoption. If the
+credential changes while leave is cleaning it up, the API returns
+`federation_credential_conflict`; resolve the conflict in `credentials.toml`
+and retry `kata federation leave <project>`.
+
+After confirmation, the CLI asks the spoke daemon to prepare the leave before
+it contacts the hub. Preparation durably marks a config-managed reservation,
+blocks new reconciliation work for that mapping, and waits for earlier hub
+enrollment or rotation requests to finish. Any completed enrollment is recorded
+and revoked idempotently before local teardown. If the command or daemon stops
+midway, rerun the same leave command; the marker prevents automatic
+re-enrollment and carries the cleanup forward. A successful leave suppresses
+the still-configured mapping until the daemon restarts.
 
 Add `--delete` to also archive the now-standalone project (reversible with
 `kata projects restore`); `--delete --force` archives even when the project has

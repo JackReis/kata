@@ -69,6 +69,16 @@ func TestResolveHubAdminAuthNamedEntryMatchingURLUsesToken(t *testing.T) {
 	}
 }
 
+func TestResolveHubAdminAuthNamedEntryMatchesCanonicalOriginAndKeepsBindingPath(t *testing.T) {
+	out, err := resolveHubAdminAuth(catalog(config.CatalogDaemonConfig{
+		Name: "hub", URL: "HTTPS://BOUND.EXAMPLE:443", Token: "catalog-token",
+	}), hubAuthInputs{hubURL: "https://bound.example/reverse-proxy", hubName: "hub"})
+
+	require.NoError(t, err)
+	assert.Equal(t, "catalog-token", out.token)
+	assert.Equal(t, "https://bound.example/reverse-proxy", out.url)
+}
+
 // TestResolveHubAdminAuthNamedEntryNotFoundErrors: an explicitly selected
 // --hub <name> that resolves to no catalog entry must error rather than
 // silently falling through to URL-match or the unauthenticated fallback.
@@ -97,6 +107,66 @@ func TestResolveHubAdminAuthURLMatchToleratesTrailingSlash(t *testing.T) {
 	if out.url != "https://bound.example" {
 		t.Fatalf("url should be the normalized binding URL, got %q", out.url)
 	}
+}
+
+func TestResolveHubAdminAuthAutomaticallyMatchesCanonicalOriginAndKeepsBindingPath(t *testing.T) {
+	out, err := resolveHubAdminAuth(catalog(config.CatalogDaemonConfig{
+		Name: "hub", URL: "HTTP://BOUND.EXAMPLE:80", Token: "catalog-token",
+	}), hubAuthInputs{hubURL: "http://bound.example/reverse-proxy"})
+
+	require.NoError(t, err)
+	assert.Equal(t, "catalog-token", out.token)
+	assert.Equal(t, "http://bound.example/reverse-proxy", out.url)
+}
+
+func TestResolveHubAdminAuthPrefersExactPathWithinSharedOrigin(t *testing.T) {
+	out, err := resolveHubAdminAuth(catalog(
+		config.CatalogDaemonConfig{
+			Name: "hub-a", URL: "https://bound.example/hub-a", Token: "token-a",
+		},
+		config.CatalogDaemonConfig{
+			Name: "hub-b", URL: "HTTPS://BOUND.EXAMPLE:443/hub-b/", Token: "token-b",
+		},
+	), hubAuthInputs{hubURL: "https://bound.example/hub-b"})
+
+	require.NoError(t, err)
+	assert.Equal(t, "token-b", out.token)
+	assert.Equal(t, "https://bound.example/hub-b", out.url)
+}
+
+func TestResolveHubAdminAuthRejectsAmbiguousSharedOrigin(t *testing.T) {
+	_, err := resolveHubAdminAuth(catalog(
+		config.CatalogDaemonConfig{
+			Name: "hub-a", URL: "https://bound.example/hub-a", Token: "token-a",
+		},
+		config.CatalogDaemonConfig{
+			Name: "hub-b", URL: "https://bound.example/hub-b", Token: "token-b",
+		},
+	), hubAuthInputs{hubURL: "https://bound.example/other"})
+
+	cliErr := requireCLIError(t, err, ExitValidation)
+	assert.Equal(t, "hub_catalog_origin_ambiguous", cliErr.Code)
+}
+
+func TestResolveHubAdminAuthCanonicalOriginErrors(t *testing.T) {
+	t.Run("named catalog URL", func(t *testing.T) {
+		_, err := resolveHubAdminAuth(catalog(config.CatalogDaemonConfig{
+			Name: "hub", URL: "https://bound.example:not-a-port", Token: "catalog-token",
+		}), hubAuthInputs{
+			hubURL:  "https://bound.example:not-a-port",
+			hubName: "hub",
+		})
+
+		require.Error(t, err)
+	})
+
+	t.Run("automatic binding URL", func(t *testing.T) {
+		_, err := resolveHubAdminAuth(catalog(config.CatalogDaemonConfig{
+			Name: "hub", URL: "https://bound.example", Token: "catalog-token",
+		}), hubAuthInputs{hubURL: "https://bound.example:not-a-port/reverse-proxy"})
+
+		require.Error(t, err)
+	})
 }
 
 // TestResolveHubAdminAuthUsesBindingAllowInsecure asserts allow_insecure for

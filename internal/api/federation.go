@@ -217,6 +217,24 @@ type CreateFederationEnrollmentResponse struct {
 	Body FederationEnrollmentOut
 }
 
+// RotateFederationEnrollmentRequest replaces project-scoped transport grants
+// for one spoke with a caller-supplied credential.
+type RotateFederationEnrollmentRequest struct {
+	Body struct {
+		SpokeInstanceUID             string `json:"spoke_instance_uid"`
+		ProjectID                    int64  `json:"project_id" minimum:"1"`
+		Capabilities                 string `json:"capabilities"`
+		Token                        string `json:"token"`
+		Actor                        string `json:"actor,omitempty"`
+		AllowAdoptionSnapshotAuthors bool   `json:"allow_adoption_snapshot_authors,omitempty"`
+	}
+}
+
+// RotateFederationEnrollmentResponse wraps the active replacement grant.
+type RotateFederationEnrollmentResponse struct {
+	Body FederationEnrollmentOut
+}
+
 // ListFederationEnrollmentsRequest lists hub-side federation transport grants.
 type ListFederationEnrollmentsRequest struct{}
 
@@ -456,6 +474,10 @@ type LeaveFederationReplicaRequestBody struct {
 	// the irreversible hub revoke. Advisory only: the authoritative check
 	// stays inside RemoveProject's transaction.
 	Preflight bool `json:"preflight,omitempty"`
+	// Prepare durably marks config-managed reconciliation as leaving and
+	// waits for earlier enrollment or rotation calls to drain. It does not
+	// revoke, detach, archive, or delete credentials.
+	Prepare bool `json:"prepare,omitempty"`
 }
 
 // LeaveFederationReplicaResultBody reports the outcome of a leave.
@@ -466,6 +488,18 @@ type LeaveFederationReplicaResultBody struct {
 	Detached    bool   `json:"detached"`
 	Disposition string `json:"disposition"`
 	Archived    bool   `json:"archived,omitempty"`
+	// PendingEnrollment identifies a config-managed enrollment that may have
+	// committed before local adoption. It omits the enrollment credential.
+	PendingEnrollment *PendingFederationEnrollmentCleanup `json:"pending_enrollment,omitempty"`
+}
+
+// PendingFederationEnrollmentCleanup gives leave clients the non-secret hub
+// coordinates needed to revoke an interrupted config-managed enrollment.
+type PendingFederationEnrollmentCleanup struct {
+	HubURL        string `json:"hub_url"`
+	HubProjectID  int64  `json:"hub_project_id"`
+	HubProjectUID string `json:"hub_project_uid"`
+	AllowInsecure bool   `json:"allow_insecure,omitempty"`
 }
 
 // LeaveFederationReplicaResponse wraps LeaveFederationReplicaResultBody.
