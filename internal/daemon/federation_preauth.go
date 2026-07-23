@@ -31,13 +31,17 @@ func withFederationIngestPreauthorization(cfg ServerConfig, next http.Handler) h
 			writeFederationPreauthorizationError(w, err)
 			return
 		}
-		_, err = evaluateFederationRequest(
-			ctx, cfg, r.Header.Get("Authorization"), projectID, "push", operation,
+		authHeader := r.Header.Get("Authorization")
+		authorization, err := evaluateFederationRequest(
+			ctx, cfg, authHeader, projectID, "push", operation,
 		)
 		if err != nil {
 			writeFederationPreauthorizationError(w, err)
 			return
 		}
+		ctx = withFederationAuthorization(
+			ctx, authHeader, projectID, "push", operation, authorization,
+		)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -110,6 +114,9 @@ func federationIngestProjectID(method, path string) (projectID int64, matched, v
 func writeFederationPreauthorizationError(w http.ResponseWriter, err error) {
 	var apiErr *api.APIError
 	if errors.As(err, &apiErr) {
+		if apiErr.Status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "5")
+		}
 		api.WriteEnvelope(w, apiErr.Status, apiErr.Code, apiErr.Message)
 		return
 	}

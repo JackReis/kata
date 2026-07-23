@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -99,6 +100,69 @@ func TestServiceFederationAccessRejectsInvalidCredentialBeforeHostDecision(t *te
 
 	assert.Equal(t, http.StatusForbidden, response.Code)
 	assert.Empty(t, controller.snapshot())
+}
+
+func TestServiceFederationAccessAdmissionLimitStopsIngestBeforeBodyRead(t *testing.T) {
+	controller := &recordingFederationAccessController{
+		decide: func(kata.FederationAccessRequest) (kata.FederationAccessDecision, error) {
+			return kata.FederationAccessDecision{}, kata.ErrFederationAdmissionLimited
+		},
+	}
+	service, project, enrollment := newFederationAccessService(t, controller)
+	body := &readTrackingBody{content: []byte(`{"events":[]}`)}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+
+		strconv.FormatInt(project.ID, 10)+"/federation/events:ingest", body)
+	request.Header.Set("Authorization", "Bearer "+enrollment.Token)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	service.Handler().ServeHTTP(response, request)
+
+	assert.Equal(t, http.StatusTooManyRequests, response.Code, response.Body.String())
+	assert.Equal(t, "5", response.Header().Get("Retry-After"))
+	assert.Zero(t, body.reads)
+	require.Len(t, controller.snapshot(), 1)
+	assert.Equal(t, kata.FederationOperation{
+		ID: "ingestFederationProjectEvents", Mutation: true,
+	}, controller.snapshot()[0].Operation)
+}
+
+func TestServiceFederationIngestUsesAdmissionDecisionOnce(t *testing.T) {
+	var calls int
+	controller := &recordingFederationAccessController{
+		decide: func(request kata.FederationAccessRequest) (kata.FederationAccessDecision, error) {
+			calls++
+			if calls > 1 {
+				return kata.FederationAccessDecision{}, kata.ErrFederationAdmissionLimited
+			}
+			return allowFederationMutation(request)
+		},
+	}
+	service, project, enrollment, databasePath := newComposedFederationAccessService(
+		t, nil, controller,
+	)
+
+	response := ingestFederationIssueAsPrincipal(t, service, project, enrollment.Token)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.Equal(t, 1, calls)
+	assert.Len(t, controller.snapshot(), 1)
+	assert.Equal(t, 1, storedFederationIssueCount(t, databasePath))
+}
+
+type readTrackingBody struct {
+	content []byte
+	reads   int
+}
+
+func (b *readTrackingBody) Read(p []byte) (int, error) {
+	b.reads++
+	if len(b.content) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, b.content)
+	b.content = b.content[n:]
+	return n, nil
 }
 
 func TestServiceFederationAccessChecksBearerOnLeaseStatus(t *testing.T) {
@@ -382,7 +446,7 @@ func TestServiceFederationIngestDenialRollsBackMutation(t *testing.T) {
 	assert.Zero(t, storedFederationIssueCount(t, databasePath))
 }
 
-func TestServiceFederationIngestReauthenticatesAfterBodyRead(t *testing.T) {
+func TestServiceFederationIngestOrdersNativeRevocationWithMutation(t *testing.T) {
 	federation := &recordingFederationAccessController{decide: allowFederationMutation}
 	service, project, enrollment, databasePath := newComposedFederationAccessService(t, nil, federation)
 	body := &revokeEnrollmentOnRead{
@@ -402,6 +466,7 @@ func TestServiceFederationIngestReauthenticatesAfterBodyRead(t *testing.T) {
 	require.NoError(t, body.err)
 	assert.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
 	assert.Contains(t, response.Body.String(), "auth_invalid")
+	assert.Len(t, federation.snapshot(), 1)
 	assert.Zero(t, storedFederationIssueCount(t, databasePath))
 }
 
@@ -423,35 +488,6 @@ func TestServiceFederationIngestHostDenialPrecedesFederationAuthorization(t *tes
 
 	assert.Equal(t, http.StatusNotFound, response.Code, response.Body.String())
 	assert.Empty(t, federation.snapshot(), "host denial must precede federation authorization")
-	assert.Zero(t, storedFederationIssueCount(t, databasePath))
-}
-
-func TestServiceFederationIngestOrdersNativeRevocationWithMutation(t *testing.T) {
-	var (
-		service    *kata.Service
-		project    kata.Project
-		enrollment kata.CreatedFederationEnrollment
-		calls      int
-		revokeErr  error
-	)
-	federation := &recordingFederationAccessController{
-		decide: func(request kata.FederationAccessRequest) (kata.FederationAccessDecision, error) {
-			calls++
-			if calls == 2 {
-				revokeErr = service.RevokeFederationEnrollment(
-					t.Context(), project.UID, enrollment.Enrollment.ID,
-				)
-			}
-			return allowFederationMutation(request)
-		},
-	}
-	var databasePath string
-	service, project, enrollment, databasePath = newComposedFederationAccessService(t, nil, federation)
-
-	response := ingestFederationIssueAsPrincipal(t, service, project, enrollment.Token)
-
-	require.NoError(t, revokeErr)
-	assert.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
 	assert.Zero(t, storedFederationIssueCount(t, databasePath))
 }
 
