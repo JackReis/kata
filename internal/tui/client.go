@@ -234,9 +234,31 @@ func (c *Client) EditBody(
 // returns a canonical name that differs from the local .kata.toml, the
 // client rewrites the file in place.
 func (c *Client) ResolveProject(ctx context.Context, startPath string) (*ResolveResp, error) {
+	return c.resolveProject(ctx, startPath, true)
+}
+
+var errPathFreeProjectNotInitialized = errors.New("project not initialized in client workspace")
+
+// ResolveProjectPathFree resolves only wire shapes that a daemon on another
+// host can understand. Client filesystem paths, whether represented as
+// start_path or a local:/// alias, never cross the wire.
+func (c *Client) ResolveProjectPathFree(ctx context.Context, startPath string) (*ResolveResp, error) {
+	return c.resolveProject(ctx, startPath, false)
+}
+
+func (c *Client) resolveProject(
+	ctx context.Context,
+	startPath string,
+	allowStartPath bool,
+) (*ResolveResp, error) {
 	req, repair, err := buildResolveRequest(ctx, startPath)
 	if err != nil {
 		return nil, err
+	}
+	if !allowStartPath {
+		if err := makeResolveRequestPathFree(req); err != nil {
+			return nil, err
+		}
 	}
 	var resp ResolveResp
 	if err := c.do(ctx, http.MethodPost, "/api/v1/projects/resolve", req, &resp); err != nil {
@@ -248,6 +270,32 @@ func (c *Client) ResolveProject(ctx context.Context, startPath string) (*Resolve
 		}
 	}
 	return &resp, nil
+}
+
+func makeResolveRequestPathFree(req map[string]any) error {
+	if _, ok := req["start_path"]; ok {
+		return errPathFreeProjectNotInitialized
+	}
+	rawAlias, ok := req["alias"]
+	if !ok {
+		return nil
+	}
+	alias, ok := rawAlias.(map[string]any)
+	if !ok {
+		return errors.New("build path-free resolve request: invalid alias")
+	}
+	switch alias["kind"] {
+	case "git":
+		return nil
+	case "local":
+		if name, ok := req["name"].(string); ok && name != "" {
+			delete(req, "alias")
+			return nil
+		}
+		return errPathFreeProjectNotInitialized
+	default:
+		return fmt.Errorf("build path-free resolve request: invalid alias kind %q", alias["kind"])
+	}
 }
 
 // buildResolveRequest selects the resolve wire shape and returns an
