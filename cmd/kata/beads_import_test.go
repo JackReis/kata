@@ -222,10 +222,24 @@ func installFakeBD(t *testing.T) {
 	path := filepath.Join(bin, "bd")
 	script := `#!/bin/sh
 set -eu
-if [ "$1" = "export" ] && [ "$2" = "--no-memories" ]; then
+if [ "$1" = "export" ]; then
+case "$2" in
+--no-memories)
 cat <<'JSONL'
-{"id":"b1","title":"Live bead","description":"Body from beads","status":"open","priority":1,"issue_type":"task","owner":"alice","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z","labels":["Needs Review"],"comment_count":1}
+{"_type":"issue","id":"b1","title":"Live bead","description":"Body from beads","status":"open","priority":1,"issue_type":"task","owner":"alice","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z","labels":["Needs Review"],"comment_count":1}
 JSONL
+;;
+--include-memories)
+cat <<'JSONL'
+{"_type":"issue","id":"b1","title":"Live bead","description":"Body from beads","status":"open","priority":1,"issue_type":"task","owner":"alice","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z","labels":["Needs Review"],"comment_count":1}
+{"_type":"memory","key":"test-race","value":"always run tests with -race flag"}
+JSONL
+;;
+*)
+	echo "unexpected bd export args: $*" >&2
+	exit 2
+	;;
+esac
 elif [ "$1" = "comments" ] && [ "$2" = "b1" ] && [ "$3" = "--json" ]; then
 cat <<'JSON'
 [{"id":"c1","issue_id":"b1","author":"Bob","text":"Comment body from beads","created_at":"2026-05-01T11:00:00Z"}]
@@ -239,6 +253,11 @@ fi
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+func buildBeadsImportRequestFromExport(r io.Reader, comments map[string][]beadsComment, actor string, includeMemories bool) (beadsImportRequest, error) {
+	req, _, err := buildBeadsImportRequestWithOptions(r, comments, actor, beadsImportBuildOptions{IncludeMemories: includeMemories})
+	return req, err
+}
+
 func TestParseBeadsExportAndBuildImportRequest(t *testing.T) {
 	export := strings.NewReader(`{"id":"b1","title":"Blocker","description":"blocker body","status":"open","priority":1,"issue_type":"task","owner":"alice","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z","labels":["Needs Review","bad label!","` + strings.Repeat("Very Long Label ", 8) + `"],"dependency_count":0,"dependent_count":1,"comment_count":0}
 {"id":"b2","title":"Blocked","description":"blocked body","status":"closed","priority":2,"issue_type":"bug","owner":"bob","created_at":"2026-05-01T11:00:00Z","created_by":"Bob","updated_at":"2026-05-01T12:00:00Z","closed_at":"2026-05-01T12:00:00Z","close_reason":"fixed elsewhere","labels":[],"dependencies":[{"issue_id":"b2","depends_on_id":"b1","type":"blocks","created_at":"2026-05-01T11:30:00Z","created_by":"Bob","metadata":"{}"}],"comment_count":1}
@@ -248,7 +267,7 @@ func TestParseBeadsExportAndBuildImportRequest(t *testing.T) {
 	require.NoError(t, err)
 	comments := map[string][]beadsComment{"b2": parsedComments}
 
-	req, err := buildBeadsImportRequest(export, comments, "importer")
+	req, err := buildBeadsImportRequestFromExport(export, comments, "importer", false)
 	require.NoError(t, err)
 	assert.Equal(t, "importer", req.Actor)
 	assert.Equal(t, "beads", req.Source)
@@ -372,7 +391,7 @@ func TestMapBeadsStatus(t *testing.T) {
 
 func TestBeadsImportsBlockedStatusAsOpenWithLabel(t *testing.T) {
 	export := strings.NewReader(`{"id":"b1","title":"Active work","description":"body","status":"blocked","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z"}`)
-	req, err := buildBeadsImportRequest(export, nil, "importer")
+	req, err := buildBeadsImportRequestFromExport(export, nil, "importer", false)
 	require.NoError(t, err)
 	require.Len(t, req.Items, 1)
 	assert.Equal(t, "open", req.Items[0].Status,
@@ -383,7 +402,7 @@ func TestBeadsImportsBlockedStatusAsOpenWithLabel(t *testing.T) {
 
 func TestBeadsImportsMergedStatusAsClosed(t *testing.T) {
 	export := strings.NewReader(`{"id":"b1","title":"Shipped","description":"body","status":"merged","close_reason":"shipped","closed_at":"2026-05-02T10:00:00Z","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-02T10:00:00Z"}`)
-	req, err := buildBeadsImportRequest(export, nil, "importer")
+	req, err := buildBeadsImportRequestFromExport(export, nil, "importer", false)
 	require.NoError(t, err)
 	require.Len(t, req.Items, 1)
 	assert.Equal(t, "closed", req.Items[0].Status)
@@ -485,6 +504,78 @@ func TestBeadsRejectsOversizedCommentsJSON(t *testing.T) {
 	assert.Equal(t, kindValidation, ce.Kind)
 	assert.Equal(t, ExitValidation, ce.ExitCode)
 	assert.Contains(t, err.Error(), "beads comments JSON exceeds")
+}
+
+func TestParseBeadsExportSkipsMemoriesByDefault(t *testing.T) {
+	export := strings.NewReader(`{"_type":"issue","id":"b1","title":"Issue","description":"body","status":"open","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z"}
+{"_type":"memory","key":"auth-jwt","value":"auth module uses JWT not sessions"}
+`)
+	issues, memories, err := parseBeadsExport(export, false)
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	assert.Empty(t, memories)
+}
+
+func TestBuildBeadsImportRequestMapsMemories(t *testing.T) {
+	export := strings.NewReader(`{"_type":"issue","id":"b1","title":"Issue","description":"body","status":"open","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z"}
+{"_type":"memory","key":"auth-jwt","value":"auth module uses JWT not sessions"}
+`)
+	req, err := buildBeadsImportRequestFromExport(export, nil, "importer", true)
+	require.NoError(t, err)
+	require.Len(t, req.Items, 2)
+
+	issue := req.Items[0]
+	assert.Equal(t, "b1", issue.ExternalID)
+
+	memory := req.Items[1]
+	assert.Equal(t, "memory:auth-jwt", memory.ExternalID)
+	assert.Equal(t, "auth-jwt", memory.Title)
+	assert.Equal(t, "auth module uses JWT not sessions", strings.Split(memory.Body, "\n---\n")[0])
+	assert.Equal(t, "closed", memory.Status)
+	require.NotNil(t, memory.ClosedReason)
+	assert.Equal(t, "done", *memory.ClosedReason)
+	assert.Contains(t, memory.Labels, "source:beads")
+	assert.Contains(t, memory.Labels, "beads-memory")
+	assert.Contains(t, memory.Labels, "beads-memory-key:auth-jwt")
+	assert.Contains(t, memory.Body, "beads_memory_key: auth-jwt")
+}
+
+func TestImportBeadsIncludeMemoriesFromLiveBD(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	installFakeBD(t)
+
+	out, err := runCLICapture(t, env, dir, "import", "--source-format", "beads", "--include-memories", "--as", "importer")
+	require.NoError(t, err)
+	assert.Contains(t, out, "imported beads: created 2, updated 0, unchanged 0, comments 1, links 0")
+
+	rows, err := env.DB.QueryContext(context.Background(),
+		"SELECT title, body FROM issues WHERE project_id = ? AND title = 'test-race'", pid)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	require.True(t, rows.Next(), "imported memory issue not found")
+	var title, body string
+	require.NoError(t, rows.Scan(&title, &body))
+	assert.Equal(t, "test-race", title)
+	assert.Contains(t, body, "always run tests with -race flag")
+	assert.Contains(t, body, "beads_memory_key: test-race")
+}
+
+func TestImportBeadsDefaultExcludesMemoriesFromLiveBD(t *testing.T) {
+	env, dir, pid := setupCLIWorkspace(t)
+	installFakeBD(t)
+
+	out, err := runCLICapture(t, env, dir, "import", "--source-format", "beads", "--as", "importer")
+	require.NoError(t, err)
+	assert.Contains(t, out, "imported beads: created 1, updated 0, unchanged 0, comments 1, links 0")
+
+	rows, err := env.DB.QueryContext(context.Background(),
+		"SELECT COUNT(*) FROM issues WHERE project_id = ? AND title = 'test-race'", pid)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	require.True(t, rows.Next())
+	var count int
+	require.NoError(t, rows.Scan(&count))
+	assert.Equal(t, 0, count)
 }
 
 type repeatedByteReader byte

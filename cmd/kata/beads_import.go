@@ -59,6 +59,11 @@ type beadsComment struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type beadsMemory struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
 type beadsImportRequest struct {
 	Actor  string                  `json:"actor"`
 	Source string                  `json:"source"`
@@ -105,12 +110,13 @@ type beadsImportSummary struct {
 }
 
 type beadsImportBuildOptions struct {
-	StrictLinks bool
+	StrictLinks     bool
+	IncludeMemories bool
 }
 
 var beadsImportStrictLinks bool
 
-func runBeadsImport(cmd *cobra.Command) error {
+func runBeadsImport(cmd *cobra.Command, includeMemories bool) error {
 	ctx := cmd.Context()
 	workspace, err := resolveStartPath(flags.Workspace)
 	if err != nil {
@@ -129,7 +135,7 @@ func runBeadsImport(cmd *cobra.Command) error {
 	}
 
 	actor, _ := resolveActor(ctx, flags.As, nil)
-	req, warnings, err := collectBeadsImportRequestWithWarnings(ctx, workspace, actor)
+	req, warnings, err := collectBeadsImportRequestWithWarnings(ctx, workspace, actor, includeMemories)
 	if err != nil {
 		return err
 	}
@@ -160,7 +166,7 @@ func runBeadsImport(cmd *cobra.Command) error {
 	return nil
 }
 
-func collectBeadsImportRequestWithWarnings(ctx context.Context, workspace, actor string) (beadsImportRequest, []string, error) {
+func collectBeadsImportRequestWithWarnings(ctx context.Context, workspace, actor string, includeMemories bool) (beadsImportRequest, []string, error) {
 	bdPath, err := exec.LookPath("bd")
 	if err != nil {
 		return beadsImportRequest{}, nil, &cliError{
@@ -169,11 +175,17 @@ func collectBeadsImportRequestWithWarnings(ctx context.Context, workspace, actor
 			ExitCode: ExitValidation,
 		}
 	}
-	exportData, err := runBD(ctx, workspace, bdPath, "export", "--no-memories")
+	exportArgs := []string{"export"}
+	if includeMemories {
+		exportArgs = append(exportArgs, "--include-memories")
+	} else {
+		exportArgs = append(exportArgs, "--no-memories")
+	}
+	exportData, err := runBD(ctx, workspace, bdPath, exportArgs...)
 	if err != nil {
 		return beadsImportRequest{}, nil, err
 	}
-	issues, err := parseBeadsExport(bytes.NewReader(exportData))
+	issues, _, err := parseBeadsExport(bytes.NewReader(exportData), includeMemories)
 	if err != nil {
 		return beadsImportRequest{}, nil, err
 	}
@@ -190,40 +202,9 @@ func collectBeadsImportRequestWithWarnings(ctx context.Context, workspace, actor
 		comments[issue.ID] = parsed
 	}
 	return buildBeadsImportRequestWithOptions(bytes.NewReader(exportData), comments, actor, beadsImportBuildOptions{
-		StrictLinks: beadsImportStrictLinks,
+		StrictLinks:     beadsImportStrictLinks,
+		IncludeMemories: includeMemories,
 	})
-}
-
-func collectBeadsImportRequest(ctx context.Context, workspace, actor string) (beadsImportRequest, error) {
-	bdPath, err := exec.LookPath("bd")
-	if err != nil {
-		return beadsImportRequest{}, &cliError{
-			Message:  "beads import requires bd on PATH",
-			Kind:     kindValidation,
-			ExitCode: ExitValidation,
-		}
-	}
-	exportData, err := runBD(ctx, workspace, bdPath, "export", "--no-memories")
-	if err != nil {
-		return beadsImportRequest{}, err
-	}
-	issues, err := parseBeadsExport(bytes.NewReader(exportData))
-	if err != nil {
-		return beadsImportRequest{}, err
-	}
-	comments := make(map[string][]beadsComment, len(issues))
-	for _, issue := range issues {
-		data, err := runBD(ctx, workspace, bdPath, "comments", issue.ID, "--json")
-		if err != nil {
-			return beadsImportRequest{}, err
-		}
-		parsed, err := parseBeadsCommentsJSON(bytes.NewReader(data))
-		if err != nil {
-			return beadsImportRequest{}, err
-		}
-		comments[issue.ID] = parsed
-	}
-	return buildBeadsImportRequest(bytes.NewReader(exportData), comments, actor)
 }
 
 func runBD(ctx context.Context, workspace, bdPath string, args ...string) ([]byte, error) {
@@ -321,25 +302,43 @@ func printBeadsImportResult(cmd *cobra.Command, bs []byte, projectID int64) erro
 	return err
 }
 
-func parseBeadsExport(r io.Reader) ([]beadsIssue, error) {
+func parseBeadsExport(r io.Reader, includeMemories bool) ([]beadsIssue, []beadsMemory, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	var out []beadsIssue
+	var issues []beadsIssue
+	var memories []beadsMemory
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
+		var peek struct {
+			Type string `json:"_type"`
+		}
+		if err := json.Unmarshal([]byte(line), &peek); err != nil {
+			return nil, nil, fmt.Errorf("decode beads export: %w", err)
+		}
+		if peek.Type == "memory" {
+			if !includeMemories {
+				continue
+			}
+			var mem beadsMemory
+			if err := json.Unmarshal([]byte(line), &mem); err != nil {
+				return nil, nil, fmt.Errorf("decode beads memory: %w", err)
+			}
+			memories = append(memories, mem)
+			continue
+		}
 		var issue beadsIssue
 		if err := json.Unmarshal([]byte(line), &issue); err != nil {
-			return nil, fmt.Errorf("decode beads export: %w", err)
+			return nil, nil, fmt.Errorf("decode beads export: %w", err)
 		}
-		out = append(out, issue)
+		issues = append(issues, issue)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan beads export: %w", err)
+		return nil, nil, fmt.Errorf("scan beads export: %w", err)
 	}
-	return out, nil
+	return issues, memories, nil
 }
 
 func parseBeadsCommentsJSON(r io.Reader) ([]beadsComment, error) {
@@ -382,12 +381,12 @@ func buildBeadsImportRequestWithOptions(
 	actor string,
 	opts beadsImportBuildOptions,
 ) (beadsImportRequest, []string, error) {
-	issues, err := parseBeadsExport(r)
+	issues, memories, err := parseBeadsExport(r, opts.IncludeMemories)
 	if err != nil {
 		return beadsImportRequest{}, nil, err
 	}
 
-	req := beadsImportRequest{Actor: actor, Source: beadsSource, Items: make([]beadsImportIssueInput, 0, len(issues))}
+	req := beadsImportRequest{Actor: actor, Source: beadsSource, Items: make([]beadsImportIssueInput, 0, len(issues)+len(memories))}
 	warnings := []string{}
 	indexByID := make(map[string]int, len(issues))
 	for _, b := range issues {
@@ -491,6 +490,14 @@ func buildBeadsImportRequestWithOptions(
 		}
 	}
 
+	for _, mem := range memories {
+		item, err := mapBeadsMemoryToImportItem(mem, actor)
+		if err != nil {
+			return beadsImportRequest{}, nil, err
+		}
+		req.Items = append(req.Items, item)
+	}
+
 	return req, warnings, nil
 }
 
@@ -510,6 +517,55 @@ func mapBeadsDependency(dep beadsDependency, dependentIssueID string) (string, s
 			strings.TrimSpace(dep.Type), dependentIssueID, targetIssueID)
 		return targetIssueID, "blocks", dependentIssueID, warn
 	}
+}
+
+func mapBeadsMemoryToImportItem(mem beadsMemory, actor string) (beadsImportIssueInput, error) {
+	key := strings.TrimSpace(mem.Key)
+	value := strings.TrimSpace(mem.Value)
+	if key == "" {
+		return beadsImportIssueInput{}, fmt.Errorf("beads memory missing key")
+	}
+	if value == "" {
+		return beadsImportIssueInput{}, fmt.Errorf("beads memory %q missing value", key)
+	}
+
+	labels := []string{"source:beads", "beads-memory"}
+	seenLabels := map[string]struct{}{}
+	labels = importlabels.AppendNormalized(nil, seenLabels, labels...)
+	labels = importlabels.AppendNormalized(labels, seenLabels, beadsMemoryKeyLabel(key))
+
+	closedReason := "done"
+	importedAt := beadsMemoryImportEpoch()
+	return beadsImportIssueInput{
+		ExternalID:   beadsMemoryExternalID(key),
+		Title:        key,
+		Body:         value + beadsMemoryFooter(key),
+		Author:       actor,
+		Status:       "closed",
+		ClosedReason: &closedReason,
+		CreatedAt:    importedAt,
+		UpdatedAt:    importedAt,
+		ClosedAt:     &importedAt,
+		Labels:       labels,
+	}, nil
+}
+
+func beadsMemoryImportEpoch() time.Time {
+	// bd export memory lines carry key/value only; kata import requires timestamps.
+	return time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
+}
+
+func beadsMemoryExternalID(key string) string {
+	return "memory:" + key
+}
+
+func beadsMemoryKeyLabel(key string) string {
+	const prefix = "beads-memory-key:"
+	return prefix + importlabels.NormalizeMax(key, 64-len(prefix))
+}
+
+func beadsMemoryFooter(key string) string {
+	return fmt.Sprintf("\n---\nImported from Beads memory\nbeads_memory_key: %s\n", key)
 }
 
 func beadsIDLabel(id string) string {
