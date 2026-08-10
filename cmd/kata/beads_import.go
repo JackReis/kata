@@ -409,7 +409,8 @@ func buildBeadsImportRequest(r io.Reader, comments map[string][]beadsComment, ac
 			}
 			idx, ok := indexByID[dep.DependsOnID]
 			if !ok {
-				return beadsImportRequest{}, fmt.Errorf("beads dependency target %q for %s not found in export", dep.DependsOnID, b.ID)
+				fmt.Fprintf(os.Stderr, "kata: skipping beads dependency target %q for %s (not found in export)\n", dep.DependsOnID, b.ID)
+				continue
 			}
 			req.Items[idx].Links = append(req.Items[idx].Links, beadsImportLinkInput{Type: "blocks", TargetExternalID: b.ID})
 		}
