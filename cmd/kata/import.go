@@ -53,6 +53,8 @@ func newImportCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "replace existing target database")
 	cmd.Flags().BoolVar(&newInstance, "new-instance", false,
 		"keep the target database's new identity instead of reusing the source identity; useful when restoring into a separate copy")
+	cmd.Flags().BoolVar(&beadsImportStrictLinks, "strict-links", false,
+		"with --source-format beads, fail import when a dependency target is missing")
 	return cmd
 }
 

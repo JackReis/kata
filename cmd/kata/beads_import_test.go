@@ -392,11 +392,89 @@ func TestBeadsImportsMergedStatusAsClosed(t *testing.T) {
 		"non-canonical close_reason 'shipped' falls back to kata's 'done'")
 }
 
-func TestBeadsRejectsDependencyTargetMissingFromExport(t *testing.T) {
+func TestBeadsSkipsDependencyTargetMissingFromExport(t *testing.T) {
 	export := strings.NewReader(`{"id":"b2","title":"Blocked","description":"body","status":"open","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z","dependencies":[{"issue_id":"b2","depends_on_id":"missing","type":"blocks"}]}`)
-	_, err := buildBeadsImportRequest(export, nil, "importer")
+	req, warnings, err := buildBeadsImportRequestWithOptions(export, nil, "importer", beadsImportBuildOptions{})
+	require.NoError(t, err)
+	require.Len(t, req.Items, 1)
+	assert.Empty(t, req.Items[0].Links)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "unknown target missing")
+	assert.Contains(t, warnings[0], "from b2")
+}
+
+func TestBeadsStrictLinksRejectsDependencyTargetMissingFromExport(t *testing.T) {
+	export := strings.NewReader(`{"id":"b2","title":"Blocked","description":"body","status":"open","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z","dependencies":[{"issue_id":"b2","depends_on_id":"missing","type":"blocks"}]}`)
+	_, _, err := buildBeadsImportRequestWithOptions(export, nil, "importer", beadsImportBuildOptions{StrictLinks: true})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "dependency target")
+}
+
+func TestBeadsDependencyTypeMappingAndDirection(t *testing.T) {
+	tests := []struct {
+		name           string
+		depType        string
+		wantFrom       string
+		wantLinkType   string
+		wantTo         string
+		wantWarnings   int
+		warningSnippet string
+	}{
+		{
+			name:         "blocks keeps existing direction",
+			depType:      "blocks",
+			wantFrom:     "target",
+			wantLinkType: "blocks",
+			wantTo:       "dependent",
+		},
+		{
+			name:         "parent-child maps to parent",
+			depType:      "parent-child",
+			wantFrom:     "dependent",
+			wantLinkType: "parent",
+			wantTo:       "target",
+		},
+		{
+			name:         "blocked-by reverses endpoints",
+			depType:      "blocked-by",
+			wantFrom:     "dependent",
+			wantLinkType: "blocks",
+			wantTo:       "target",
+		},
+		{
+			name:         "discovered-from maps related",
+			depType:      "discovered-from",
+			wantFrom:     "dependent",
+			wantLinkType: "related",
+			wantTo:       "target",
+		},
+		{
+			name:           "unknown falls back to blocks warning",
+			depType:        "mystery",
+			wantFrom:       "target",
+			wantLinkType:   "blocks",
+			wantTo:         "dependent",
+			wantWarnings:   1,
+			warningSnippet: `unknown dependency type "mystery"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			export := strings.NewReader(`{"id":"target","title":"Target","description":"body","status":"open","created_at":"2026-05-01T10:00:00Z","created_by":"Alice","updated_at":"2026-05-01T10:00:00Z"}
+{"id":"dependent","title":"Dependent","description":"body","status":"open","created_at":"2026-05-01T11:00:00Z","created_by":"Bob","updated_at":"2026-05-01T11:00:00Z","dependencies":[{"issue_id":"dependent","depends_on_id":"target","type":"` + tc.depType + `"}]}`)
+			req, warnings, err := buildBeadsImportRequestWithOptions(export, nil, "importer", beadsImportBuildOptions{})
+			require.NoError(t, err)
+			require.Len(t, req.Items, 2)
+			assertIssueHasSingleLink(t, req, tc.wantFrom, tc.wantLinkType, tc.wantTo)
+			if tc.wantWarnings == 0 {
+				assert.Empty(t, warnings)
+				return
+			}
+			require.Len(t, warnings, tc.wantWarnings)
+			assert.Contains(t, warnings[0], tc.warningSnippet)
+		})
+	}
 }
 
 func TestBeadsRejectsOversizedCommentsJSON(t *testing.T) {
@@ -423,4 +501,23 @@ func mustParseTime(t *testing.T, s string) time.Time {
 	ts, err := time.Parse(time.RFC3339Nano, s)
 	require.NoError(t, err)
 	return ts
+}
+
+func assertIssueHasSingleLink(
+	t *testing.T,
+	req beadsImportRequest,
+	fromExternalID string,
+	linkType string,
+	targetExternalID string,
+) {
+	t.Helper()
+	byID := map[string]beadsImportIssueInput{}
+	for _, item := range req.Items {
+		byID[item.ExternalID] = item
+	}
+	from, ok := byID[fromExternalID]
+	require.True(t, ok, "missing issue %q in request", fromExternalID)
+	require.Len(t, from.Links, 1)
+	assert.Equal(t, linkType, from.Links[0].Type)
+	assert.Equal(t, targetExternalID, from.Links[0].TargetExternalID)
 }

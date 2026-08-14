@@ -95,13 +95,20 @@ type beadsImportLinkInput struct {
 }
 
 type beadsImportSummary struct {
-	Source    string `json:"source"`
-	Created   int    `json:"created"`
-	Updated   int    `json:"updated"`
-	Unchanged int    `json:"unchanged"`
-	Comments  int    `json:"comments"`
-	Links     int    `json:"links"`
+	Source    string   `json:"source"`
+	Created   int      `json:"created"`
+	Updated   int      `json:"updated"`
+	Unchanged int      `json:"unchanged"`
+	Comments  int      `json:"comments"`
+	Links     int      `json:"links"`
+	Errors    []string `json:"errors"`
 }
+
+type beadsImportBuildOptions struct {
+	StrictLinks bool
+}
+
+var beadsImportStrictLinks bool
 
 func runBeadsImport(cmd *cobra.Command) error {
 	ctx := cmd.Context()
@@ -122,7 +129,7 @@ func runBeadsImport(cmd *cobra.Command) error {
 	}
 
 	actor, _ := resolveActor(ctx, flags.As, nil)
-	req, err := collectBeadsImportRequest(ctx, workspace, actor)
+	req, warnings, err := collectBeadsImportRequestWithWarnings(ctx, workspace, actor)
 	if err != nil {
 		return err
 	}
@@ -139,7 +146,52 @@ func runBeadsImport(cmd *cobra.Command) error {
 	if status >= 400 {
 		return apiErrFromBody(status, bs)
 	}
-	return printBeadsImportResult(cmd, bs, projectID)
+	if err := printBeadsImportResult(cmd, bs, projectID); err != nil {
+		return err
+	}
+	if flags.Quiet {
+		return nil
+	}
+	for _, warning := range warnings {
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "warning: %s\n", warning); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func collectBeadsImportRequestWithWarnings(ctx context.Context, workspace, actor string) (beadsImportRequest, []string, error) {
+	bdPath, err := exec.LookPath("bd")
+	if err != nil {
+		return beadsImportRequest{}, nil, &cliError{
+			Message:  "beads import requires bd on PATH",
+			Kind:     kindValidation,
+			ExitCode: ExitValidation,
+		}
+	}
+	exportData, err := runBD(ctx, workspace, bdPath, "export", "--no-memories")
+	if err != nil {
+		return beadsImportRequest{}, nil, err
+	}
+	issues, err := parseBeadsExport(bytes.NewReader(exportData))
+	if err != nil {
+		return beadsImportRequest{}, nil, err
+	}
+	comments := make(map[string][]beadsComment, len(issues))
+	for _, issue := range issues {
+		data, err := runBD(ctx, workspace, bdPath, "comments", issue.ID, "--json")
+		if err != nil {
+			return beadsImportRequest{}, nil, err
+		}
+		parsed, err := parseBeadsCommentsJSON(bytes.NewReader(data))
+		if err != nil {
+			return beadsImportRequest{}, nil, err
+		}
+		comments[issue.ID] = parsed
+	}
+	return buildBeadsImportRequestWithOptions(bytes.NewReader(exportData), comments, actor, beadsImportBuildOptions{
+		StrictLinks: beadsImportStrictLinks,
+	})
 }
 
 func collectBeadsImportRequest(ctx context.Context, workspace, actor string) (beadsImportRequest, error) {
@@ -320,12 +372,23 @@ func parseBeadsCommentsJSON(r io.Reader) ([]beadsComment, error) {
 }
 
 func buildBeadsImportRequest(r io.Reader, comments map[string][]beadsComment, actor string) (beadsImportRequest, error) {
+	req, _, err := buildBeadsImportRequestWithOptions(r, comments, actor, beadsImportBuildOptions{})
+	return req, err
+}
+
+func buildBeadsImportRequestWithOptions(
+	r io.Reader,
+	comments map[string][]beadsComment,
+	actor string,
+	opts beadsImportBuildOptions,
+) (beadsImportRequest, []string, error) {
 	issues, err := parseBeadsExport(r)
 	if err != nil {
-		return beadsImportRequest{}, err
+		return beadsImportRequest{}, nil, err
 	}
 
 	req := beadsImportRequest{Actor: actor, Source: beadsSource, Items: make([]beadsImportIssueInput, 0, len(issues))}
+	warnings := []string{}
 	indexByID := make(map[string]int, len(issues))
 	for _, b := range issues {
 		rawStatus := strings.TrimSpace(b.Status)
@@ -354,7 +417,7 @@ func buildBeadsImportRequest(r io.Reader, comments map[string][]beadsComment, ac
 			author = actor
 		}
 		if strings.TrimSpace(b.Title) == "" {
-			return beadsImportRequest{}, fmt.Errorf("beads issue %q missing title", b.ID)
+			return beadsImportRequest{}, nil, fmt.Errorf("beads issue %q missing title", b.ID)
 		}
 
 		closedAt := b.ClosedAt
@@ -407,15 +470,46 @@ func buildBeadsImportRequest(r io.Reader, comments map[string][]beadsComment, ac
 			if strings.TrimSpace(dep.DependsOnID) == "" {
 				continue
 			}
-			idx, ok := indexByID[dep.DependsOnID]
-			if !ok {
-				return beadsImportRequest{}, fmt.Errorf("beads dependency target %q for %s not found in export", dep.DependsOnID, b.ID)
+			fromExternalID, linkType, toExternalID, warn := mapBeadsDependency(dep, b.ID)
+			if warn != "" {
+				warnings = append(warnings, warn)
 			}
-			req.Items[idx].Links = append(req.Items[idx].Links, beadsImportLinkInput{Type: "blocks", TargetExternalID: b.ID})
+			fromIdx, ok := indexByID[fromExternalID]
+			if !ok {
+				msg := fmt.Sprintf("skipped link %s -> %s (%s): unknown target %s (from %s)",
+					fromExternalID, toExternalID, linkType, dep.DependsOnID, b.ID)
+				if opts.StrictLinks {
+					return beadsImportRequest{}, nil, fmt.Errorf("beads dependency target %q for %s not found in export", dep.DependsOnID, b.ID)
+				}
+				warnings = append(warnings, msg)
+				continue
+			}
+			req.Items[fromIdx].Links = append(req.Items[fromIdx].Links, beadsImportLinkInput{
+				Type:             linkType,
+				TargetExternalID: toExternalID,
+			})
 		}
 	}
 
-	return req, nil
+	return req, warnings, nil
+}
+
+func mapBeadsDependency(dep beadsDependency, dependentIssueID string) (string, string, string, string) {
+	targetIssueID := strings.TrimSpace(dep.DependsOnID)
+	switch strings.TrimSpace(dep.Type) {
+	case "", "blocks":
+		return targetIssueID, "blocks", dependentIssueID, ""
+	case "parent-child":
+		return dependentIssueID, "parent", targetIssueID, ""
+	case "blocked-by":
+		return dependentIssueID, "blocks", targetIssueID, ""
+	case "discovered-from":
+		return dependentIssueID, "related", targetIssueID, ""
+	default:
+		warn := fmt.Sprintf("unknown dependency type %q on %s -> %s; imported as blocks",
+			strings.TrimSpace(dep.Type), dependentIssueID, targetIssueID)
+		return targetIssueID, "blocks", dependentIssueID, warn
+	}
 }
 
 func beadsIDLabel(id string) string {
