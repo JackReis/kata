@@ -57,6 +57,8 @@ func newImportCmd() *cobra.Command {
 		"keep the target database's new identity instead of reusing the source identity; useful when restoring into a separate copy")
 	cmd.Flags().BoolVar(&merge, "merge", false,
 		"merge one project snapshot into an existing target database")
+	cmd.Flags().BoolVar(&beadsImportStrictLinks, "strict-links", false,
+		"with --source-format beads, fail import when a dependency target is missing")
 	return cmd
 }
 
