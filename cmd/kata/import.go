@@ -22,6 +22,7 @@ func newImportCmd() *cobra.Command {
 	var force bool
 	var newInstance bool
 	var sourceFormat string
+	var includeMemories bool
 	cmd := &cobra.Command{
 		Use:   "import",
 		Short: "import a kata database export",
@@ -37,7 +38,7 @@ func newImportCmd() *cobra.Command {
 				if err := validateBeadsImportFlags(cmd); err != nil {
 					return err
 				}
-				return runBeadsImport(cmd)
+				return runBeadsImport(cmd, includeMemories)
 			default:
 				return &cliError{
 					Message:  fmt.Sprintf("unsupported import format %q", format),
@@ -48,6 +49,8 @@ func newImportCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&sourceFormat, "source-format", "kata", "import source format (kata or beads)")
+	cmd.Flags().BoolVar(&includeMemories, "include-memories", false,
+		"include beads persistent memories (from bd remember) when --source-format beads")
 	cmd.Flags().StringVar(&input, "input", "", "path to JSONL export")
 	cmd.Flags().StringVar(&target, "target", "", "SQLite database path or Postgres DSN to create")
 	cmd.Flags().BoolVar(&force, "force", false, "replace existing target database")
