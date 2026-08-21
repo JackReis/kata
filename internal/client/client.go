@@ -32,7 +32,7 @@ const (
 
 	// DefaultHTTPTimeout is the normal non-streaming request and
 	// configured-remote probe budget.
-	DefaultHTTPTimeout = 5 * time.Second
+	DefaultHTTPTimeout = 30 * time.Second
 )
 
 // ParseHTTPTimeout parses a positive Go duration, returning fallback for an
