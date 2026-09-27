@@ -12,7 +12,7 @@ Changelog tip in-tree is **0.15.1** (2026-08-20) plus an **Unreleased** idle-shu
 
 ## Open Engine is not in this tree
 
-No file in this checkout names "Open Engine" or a multi-provider model router. Do not search for an engine package or invent one.
+No package in this checkout is Open Engine or a multi-provider model router. The fleet map in [Fleet trust guidelines](#fleet-trust-guidelines) names Open Engine as a protocol role outside this tree. Do not search for an engine package or invent one.
 
 The closest in-tree "engine" is the federation **fold**: `docs/design/federation.md` describes mutable state as a CRDT and checks `direct_write_projection == Fold(project_events)`. That fold converges hub and spoke replicas. It does not call language models.
 
@@ -59,6 +59,17 @@ These are product contracts already written in `AGENTS.md`, `docs/design/archite
 11. **Do not assume MCP tools are preloaded.** Call the section loader (`kata.load_issue_discovery`, `kata.load_issue_mutation`, and the other eleven) before the typed tools.
 12. **Do not mark anonymous `--insecure-readonly` sessions writable.** That mode serves the shell and read snapshots only.
 13. **Do not publish this harvest** by adding it to `docs/zensical.toml` unless a docs owner asks. Leave `repo_url` pointed at the documented upstream.
+
+## Fleet trust guidelines
+
+Vault and skill source of truth is the Fleet information unification doctrine (Multica AEGI-164 / AEGI-186). This file only points at it. Kata still closes ledger work; it does not store the fleet map.
+
+Fleet SoT map: Multica assigns · Open Engine protocol · Kata closes · Hermes executes · Ringer receipts · prover proves · Vault narrative · Dune constraints.
+
+1. Prefer Cursor cloud for harvest, draft, and review.
+2. Rotate review seats: Claude Code → ChatGPT/Codex → Gemini (Antigravity) → Kimi.
+3. Soft ship: draft → review → Multica stamp → apply (profile-mutate way-of-work).
+4. CoS may soft-ship after stamp. Jack-gated: `--replace`, secrets, spend, and irreversible changes.
 
 ## Read order when context is tight
 
