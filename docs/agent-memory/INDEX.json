@@ -1,0 +1,85 @@
+{
+  "repo": "github.com/JackReis/kata",
+  "module": "go.kenn.io/kata",
+  "documented_upstream": "https://github.com/kenn-io/kata",
+  "generated_at": "2026-09-27T23:37:22Z",
+  "main_tip": "b37aa0127e7eddc49496b333ee0e7c677a8ea776",
+  "main_tip_committed_at": "2026-08-24T05:13:36Z",
+  "changelog_version": "0.15.1",
+  "entrypoints": [
+    "cmd/kata (cobra CLI binary kata)",
+    "service.go (embeddable HTTP service, module go.kenn.io/kata)",
+    "cmd/kata/mcp.go (kata mcp serve, stdio or Streamable HTTP)",
+    "web/ and packages/kata-ui (browser UI served by the daemon)",
+    "pkg/client (generated HTTP API client)",
+    "pkg/connector (kata.connector.v1 SDK and conformance kit)",
+    "cmd/release-artifacts"
+  ],
+  "providers": [
+    {
+      "id": "issue-sync",
+      "shipped": ["github"],
+      "note": "Provider-neutral issue_sync tables and /issue-sync/{provider} routes. GitHub is the only adapter. One-way import. Config must not hold raw tokens."
+    },
+    {
+      "id": "embeddings",
+      "shipped": ["openai-compatible-/embeddings"],
+      "note": "Opt-in. Any local or hosted endpoint that speaks that wire format. Kata does not bundle a model."
+    },
+    {
+      "id": "storage",
+      "shipped": ["sqlite", "postgres"],
+      "note": "SQLite under KATA_HOME by default. Postgres via KATA_DSN. Clients do not open either database."
+    },
+    {
+      "id": "connector",
+      "shipped": ["kata.connector.v1-sdk"],
+      "note": "Process protocol and conformance kit only. No daemon config, bindings, or sync."
+    },
+    {
+      "id": "federation",
+      "shipped": ["hub", "spoke"],
+      "note": "Mutual trust replicas. Not an LLM provider and not multi-tenant auth."
+    }
+  ],
+  "hot_paths": [
+    "cmd/kata",
+    "internal/daemon",
+    "internal/db/sqlitestore",
+    "internal/db/pgstore",
+    "internal/tui",
+    "internal/mcp",
+    "internal/githubsync",
+    "internal/federation",
+    "internal/embedding",
+    "web/src",
+    "service.go"
+  ],
+  "branch_count": 12,
+  "branches": [
+    "main",
+    "dev",
+    "docs-assets",
+    "feat/issue-58",
+    "feat/issue-59",
+    "fix/beads-import-aegis-20260810",
+    "pi-tasks-kata-plugin",
+    "port-env-bind",
+    "wesm/branch-orchestration-fixes",
+    "wesm/branch-orchestration-spec",
+    "windows-port",
+    "claude-hooks-design"
+  ],
+  "top_risks": [
+    "Editing SQLite or Postgres store code without the other backend.",
+    "Branching from origin/dev or replaying fix/beads-import-aegis-20260810 over the landed importer.",
+    "Inferring issue closure from git, or closing without a substantive message and typed evidence.",
+    "Sending a daemon token, catalog admin token, or browser credential to the wrong origin.",
+    "Weakening Host, Origin, or split browser-session checks so another client class works.",
+    "Adding connector or other unknown keys to daemon config.toml.",
+    "Changing production schema or migrations without explicit consent.",
+    "Putting hooks or secrets in committed .kata.toml.",
+    "Treating docs-assets or stale May-July 2026 branches as merge candidates.",
+    "Assuming MCP typed tools are loaded before their section loader runs."
+  ]
+}
