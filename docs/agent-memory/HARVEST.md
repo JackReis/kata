@@ -62,12 +62,12 @@ These are product contracts already written in `AGENTS.md`, `docs/design/archite
 
 ## Fleet trust guidelines
 
-Vault and skill source of truth is the Fleet information unification doctrine (Multica AEGI-164 / AEGI-186). This file only points at it. Kata still closes ledger work; it does not store the fleet map.
+Vault and skill source of truth is the `fleet-information-unification` skill and `Architecture/fleet/FLEET-INFORMATION-UNIFICATION-DOCTRINE-20260927.md` (Fleet information unification, Multica AEGI-164 / AEGI-186). This file only points at it. Kata still closes ledger work; it does not store the fleet map.
 
 Fleet SoT map: Multica assigns · Open Engine protocol · Kata closes · Hermes executes · Ringer receipts · prover proves · Vault narrative · Dune constraints.
 
-1. Prefer Cursor cloud for harvest, draft, and review.
-2. Rotate review seats: Claude Code → ChatGPT/Codex → Gemini (Antigravity) → Kimi.
+1. Prefer Cursor cloud for draft/review.
+2. Trust rotation: Claude Code → ChatGPT/Codex → Gemini (Antigravity) → Kimi.
 3. Soft ship: draft → review → Multica stamp → apply (profile-mutate way-of-work).
 4. CoS may soft-ship after stamp. Jack-gated: `--replace`, secrets, spend, and irreversible changes.
 

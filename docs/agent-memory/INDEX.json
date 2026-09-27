@@ -83,11 +83,13 @@
     "Assuming MCP typed tools are loaded before their section loader runs."
   ],
   "fleet_information_unification": {
-    "sot": "Vault and skill source of truth is Fleet information unification (AEGI-164/AEGI-186).",
+    "sot": "Vault and skill source of truth is Fleet information unification (AEGI-164/AEGI-186): skill fleet-information-unification and Architecture/fleet/FLEET-INFORMATION-UNIFICATION-DOCTRINE-20260927.md.",
+    "skill": "fleet-information-unification",
+    "vault_path": "Architecture/fleet/FLEET-INFORMATION-UNIFICATION-DOCTRINE-20260927.md",
     "sot_map": "Multica assigns · Open Engine protocol · Kata closes · Hermes executes · Ringer receipts · prover proves · Vault narrative · Dune constraints.",
     "trust_guidelines": [
-      "Prefer Cursor cloud for harvest/draft/review.",
-      "Rotate review seats: Claude Code → ChatGPT/Codex → Gemini (Antigravity) → Kimi.",
+      "Prefer Cursor cloud for draft/review.",
+      "Trust rotation: Claude Code → ChatGPT/Codex → Gemini (Antigravity) → Kimi.",
       "Soft ship: draft → review → Multica stamp → apply (profile-mutate way-of-work).",
       "CoS may soft-ship after stamp; Jack-gated: --replace, secrets, spend, irreversible."
     ]
