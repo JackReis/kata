@@ -93,5 +93,12 @@
       "Soft ship: draft → review → Multica stamp → apply (profile-mutate way-of-work).",
       "CoS may soft-ship after stamp; Jack-gated: --replace, secrets, spend, irreversible."
     ]
+  },
+  "dune_import_gate": {
+    "doc": "docs/DUNE-CI.md",
+    "policy": "tools/duneimport/policy.json",
+    "command": "make dune-import",
+    "workflow": ".github/workflows/dune-import-gates.yml",
+    "note": "FAIL-closed import graph. Exit 0 clean, exit 1 banned edge, exit 2 unsound gate. Missing gate means do not ship."
   }
 }

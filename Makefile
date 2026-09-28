@@ -1,4 +1,4 @@
-.PHONY: build install test test-short test-stress test-federation-docker release-scripts-test lint vet clean fmt nilaway openapi api-generate api-check tui tui-demo docs-install docs-build docs-serve docs-check docs-deploy docs-screenshots docs-assets-branch kata-ui-check kata-ui-test kata-ui-pack-check web-install web-generate web-check web-audit web-test web-test-browser web-e2e web-build web-embed web-assets-check web-release-check web-dev
+.PHONY: build install test test-short test-stress test-federation-docker release-scripts-test lint vet clean fmt nilaway openapi api-generate api-check dune-import tui tui-demo docs-install docs-build docs-serve docs-check docs-deploy docs-screenshots docs-assets-branch kata-ui-check kata-ui-test kata-ui-pack-check web-install web-generate web-check web-audit web-test web-test-browser web-e2e web-build web-embed web-assets-check web-release-check web-dev
 
 GOFLAGS_TEST := -shuffle=on
 GOBIN ?= $(HOME)/.local/bin
@@ -113,6 +113,12 @@ docs-deploy:
 
 lint:
 	GOLANGCI_LINT_CACHE="$(CURDIR)/.cache/golangci-lint" golangci-lint run --config .golangci.yml
+
+dune-import:
+	@set -e; tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	go build -o "$$tmp/duneimport" ./tools/duneimport; \
+	"$$tmp/duneimport"
 
 vet:
 	go vet ./...
