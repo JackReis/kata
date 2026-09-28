@@ -1,4 +1,4 @@
-.PHONY: build install test test-short test-stress test-federation-docker release-scripts-test lint vet clean fmt nilaway openapi api-generate api-check tui tui-demo docs-install docs-build docs-serve docs-check docs-deploy docs-screenshots docs-assets-branch kata-ui-check kata-ui-test kata-ui-pack-check web-install web-generate web-check web-audit web-test web-test-browser web-e2e web-build web-embed web-assets-check web-release-check web-dev
+.PHONY: build install test test-short test-stress test-federation-docker release-scripts-test lint vet clean fmt nilaway openapi api-generate api-check tui tui-demo docs-install docs-build docs-serve docs-check docs-deploy docs-screenshots docs-assets-branch kata-ui-check kata-ui-test kata-ui-pack-check web-install web-generate web-check web-audit web-test web-test-browser web-e2e web-build web-embed web-assets-check web-release-check web-dev import-bans
 
 GOFLAGS_TEST := -shuffle=on
 GOBIN ?= $(HOME)/.local/bin
@@ -18,6 +18,11 @@ install: web-embed
 
 test:
 	env -u KATA_AUTH_TOKEN go test $(GOFLAGS_TEST) ./...
+
+# FAIL-closed import graph (AEGI-178). `go test` cache tracks files this
+# package reads, and -count=1 keeps a local gate from reusing a stale pass.
+import-bans:
+	env -u KATA_AUTH_TOKEN go test -count=1 ./internal/importban
 
 # Regenerate the committed OpenAPI schema and generated Go client.
 # Drift tests fail if the OpenAPI artifacts or generated client differ from this output.

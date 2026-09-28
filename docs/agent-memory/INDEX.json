@@ -79,9 +79,18 @@
     "Adding connector or other unknown keys to daemon config.toml.",
     "Changing production schema or migrations without explicit consent.",
     "Putting hooks or secrets in committed .kata.toml.",
+    "Landing a browser or pkg import that make import-bans rejects (AEGI-178).",
     "Treating docs-assets or stale May-July 2026 branches as merge candidates.",
     "Assuming MCP typed tools are loaded before their section loader runs."
   ],
+  "import_bans": {
+    "card": "AEGI-178",
+    "doctrine_skill": "dune-electron-doctrine",
+    "vault": "Architecture/fleet/DUNE-ELECTRON-VAULT-DOCTRINE-20260927.md §3",
+    "command": "make import-bans",
+    "package": "internal/importban",
+    "wired_through": "make test and the Go job in .github/workflows/test.yml"
+  },
   "fleet_information_unification": {
     "sot": "Vault and skill source of truth is Fleet information unification (AEGI-164/AEGI-186): skill fleet-information-unification and Architecture/fleet/FLEET-INFORMATION-UNIFICATION-DOCTRINE-20260927.md.",
     "skill": "fleet-information-unification",
