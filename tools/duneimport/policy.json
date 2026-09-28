@@ -1,0 +1,293 @@
+{
+  "version": 1,
+  "fail_closed": true,
+  "scopes": [
+    {
+      "id": "go",
+      "language": "go",
+      "root": "."
+    },
+    {
+      "id": "browser",
+      "language": "ts",
+      "root": "web/src"
+    },
+    {
+      "id": "kata-ui",
+      "language": "ts",
+      "root": "packages/kata-ui/src"
+    }
+  ],
+  "denies": [
+    {
+      "id": "githubsync-feature-colocation",
+      "scope": "go",
+      "from": "go.kenn.io/kata/internal/githubsync",
+      "to": [
+        "go.kenn.io/kata/internal/federation",
+        "go.kenn.io/kata/internal/embedding",
+        "go.kenn.io/kata/internal/mcp",
+        "go.kenn.io/kata/internal/tui",
+        "go.kenn.io/kata/internal/hooks",
+        "go.kenn.io/kata/internal/daemon"
+      ],
+      "reason": "Feature colocation: GitHub sync must not import federation, embeddings, MCP, the TUI, hooks, or the daemon."
+    },
+    {
+      "id": "federation-feature-colocation",
+      "scope": "go",
+      "from": "go.kenn.io/kata/internal/federation",
+      "to": [
+        "go.kenn.io/kata/internal/githubsync",
+        "go.kenn.io/kata/internal/embedding",
+        "go.kenn.io/kata/internal/mcp",
+        "go.kenn.io/kata/internal/tui",
+        "go.kenn.io/kata/internal/hooks"
+      ],
+      "reason": "Feature colocation: federation must not import GitHub sync, embeddings, MCP, the TUI, or hooks. It may import the daemon because the replica worker runs in that process."
+    },
+    {
+      "id": "embedding-feature-colocation",
+      "scope": "go",
+      "from": "go.kenn.io/kata/internal/embedding",
+      "to": [
+        "go.kenn.io/kata/internal/githubsync",
+        "go.kenn.io/kata/internal/federation",
+        "go.kenn.io/kata/internal/mcp",
+        "go.kenn.io/kata/internal/tui",
+        "go.kenn.io/kata/internal/hooks",
+        "go.kenn.io/kata/internal/daemon",
+        "go.kenn.io/kata/internal/db"
+      ],
+      "reason": "Feature colocation: the embedding client is a provider HTTP caller and must not import other features or the store."
+    },
+    {
+      "id": "mcp-unprivileged",
+      "scope": "go",
+      "from": "go.kenn.io/kata/internal/mcp",
+      "to": [
+        "go.kenn.io/kata/internal/daemon",
+        "go.kenn.io/kata/internal/db",
+        "go.kenn.io/kata/internal/githubsync",
+        "go.kenn.io/kata/internal/federation",
+        "go.kenn.io/kata/internal/embedding",
+        "go.kenn.io/kata/internal/tui",
+        "go.kenn.io/kata/internal/hooks"
+      ],
+      "reason": "Process boundary: MCP is an API client. It must not import the daemon, the store, or other feature packages. The storage admin package is the sanctioned in-process admin seam."
+    },
+    {
+      "id": "tui-unprivileged",
+      "scope": "go",
+      "from": "go.kenn.io/kata/internal/tui",
+      "to": [
+        "go.kenn.io/kata/internal/daemon",
+        "go.kenn.io/kata/internal/db",
+        "go.kenn.io/kata/internal/githubsync",
+        "go.kenn.io/kata/internal/embedding",
+        "go.kenn.io/kata/internal/mcp",
+        "go.kenn.io/kata/internal/hooks",
+        "go.kenn.io/kata/internal/storageadmin"
+      ],
+      "reason": "Process boundary: the TUI is an HTTP client. It must not import the daemon, the store, or privileged feature packages. The federation view may import internal/federation."
+    },
+    {
+      "id": "hooks-feature-colocation",
+      "scope": "go",
+      "from": "go.kenn.io/kata/internal/hooks",
+      "to": [
+        "go.kenn.io/kata/internal/daemon",
+        "go.kenn.io/kata/internal/githubsync",
+        "go.kenn.io/kata/internal/federation",
+        "go.kenn.io/kata/internal/embedding",
+        "go.kenn.io/kata/internal/mcp",
+        "go.kenn.io/kata/internal/tui",
+        "go.kenn.io/kata/internal/storageadmin"
+      ],
+      "reason": "Feature colocation: hooks dispatch events through the store interface and must not import other feature packages."
+    },
+    {
+      "id": "internal-client-unprivileged",
+      "scope": "go",
+      "from": "go.kenn.io/kata/internal/client",
+      "to": [
+        "go.kenn.io/kata/internal/db",
+        "go.kenn.io/kata/internal/githubsync",
+        "go.kenn.io/kata/internal/federation",
+        "go.kenn.io/kata/internal/embedding",
+        "go.kenn.io/kata/internal/mcp",
+        "go.kenn.io/kata/internal/tui",
+        "go.kenn.io/kata/internal/hooks",
+        "go.kenn.io/kata/internal/storageadmin"
+      ],
+      "reason": "Process boundary: the daemon-discovery client may import the daemon package and must not import stores or feature packages."
+    },
+    {
+      "id": "pkg-client-unprivileged",
+      "scope": "go",
+      "from": "go.kenn.io/kata/pkg/client",
+      "to": [
+        "go.kenn.io/kata/internal/daemon",
+        "go.kenn.io/kata/internal/db",
+        "go.kenn.io/kata/internal/githubsync",
+        "go.kenn.io/kata/internal/federation",
+        "go.kenn.io/kata/internal/embedding",
+        "go.kenn.io/kata/internal/mcp",
+        "go.kenn.io/kata/internal/tui",
+        "go.kenn.io/kata/internal/hooks",
+        "go.kenn.io/kata/internal/storageadmin",
+        "go.kenn.io/kata/internal/connector"
+      ],
+      "reason": "Process boundary: the public API client may import internal/client for transport and must not import the daemon, stores, or feature packages."
+    },
+    {
+      "id": "pkg-connector-unprivileged",
+      "scope": "go",
+      "from": "go.kenn.io/kata/pkg/connector",
+      "to": [
+        "go.kenn.io/kata/internal/daemon",
+        "go.kenn.io/kata/internal/db",
+        "go.kenn.io/kata/internal/githubsync",
+        "go.kenn.io/kata/internal/federation",
+        "go.kenn.io/kata/internal/embedding",
+        "go.kenn.io/kata/internal/mcp",
+        "go.kenn.io/kata/internal/tui",
+        "go.kenn.io/kata/internal/hooks",
+        "go.kenn.io/kata/internal/storageadmin",
+        "go.kenn.io/kata/internal/client"
+      ],
+      "reason": "Process boundary: the connector SDK must not import the daemon, stores, or feature packages. The conformance kit may import internal/connector/identityaudit."
+    },
+    {
+      "id": "stores-not-features",
+      "scope": "go",
+      "from": "go.kenn.io/kata/internal/db",
+      "to": [
+        "go.kenn.io/kata/internal/daemon",
+        "go.kenn.io/kata/internal/federation",
+        "go.kenn.io/kata/internal/githubsync",
+        "go.kenn.io/kata/internal/embedding",
+        "go.kenn.io/kata/internal/mcp",
+        "go.kenn.io/kata/internal/tui",
+        "go.kenn.io/kata/internal/hooks",
+        "go.kenn.io/kata/internal/storageadmin",
+        "go.kenn.io/kata/internal/client"
+      ],
+      "reason": "Layering: store packages must not import feature, daemon, or client packages."
+    },
+    {
+      "id": "sqlitestore-not-pgstore",
+      "scope": "go",
+      "from": "go.kenn.io/kata/internal/db/sqlitestore",
+      "to": ["go.kenn.io/kata/internal/db/pgstore"],
+      "reason": "Layering: the SQLite store must not import the Postgres store. storeopen is the composition root that sees both."
+    },
+    {
+      "id": "pgstore-not-sqlitestore",
+      "scope": "go",
+      "from": "go.kenn.io/kata/internal/db/pgstore",
+      "to": ["go.kenn.io/kata/internal/db/sqlitestore"],
+      "reason": "Layering: the Postgres store must not import the SQLite store. storeopen is the composition root that sees both."
+    },
+    {
+      "id": "sqlite-driver-allowlist",
+      "scope": "go",
+      "from": "go.kenn.io/kata",
+      "to": [
+        "modernc.org/sqlite",
+        "github.com/mattn/go-sqlite3",
+        "github.com/asg017/sqlite-vec-go-bindings",
+        "go.kenn.io/kit/vector/sqlitevec"
+      ],
+      "except_from": [
+        "go.kenn.io/kata/internal/db/sqlitestore",
+        "go.kenn.io/kata/internal/vector"
+      ],
+      "reason": "Agent misuse: only the SQLite store and the vector index may import SQLite drivers."
+    },
+    {
+      "id": "pgx-driver-allowlist",
+      "scope": "go",
+      "from": "go.kenn.io/kata",
+      "to": ["github.com/jackc/pgx"],
+      "except_from": [
+        "go.kenn.io/kata/internal/db/pgstore",
+        "go.kenn.io/kata/internal/config",
+        "go.kenn.io/kata/internal/testenv"
+      ],
+      "reason": "Agent misuse: only the Postgres store, DSN parsing, and the test harness may import pgx."
+    },
+    {
+      "id": "sqlitestore-import-allowlist",
+      "scope": "go",
+      "from": "go.kenn.io/kata",
+      "to": ["go.kenn.io/kata/internal/db/sqlitestore"],
+      "except_from": [
+        "go.kenn.io/kata/internal/db/storeopen",
+        "go.kenn.io/kata/internal/jsonl",
+        "go.kenn.io/kata/internal/testenv"
+      ],
+      "reason": "Process boundary: production code opens SQLite through storeopen, jsonl cutover, or the test harness."
+    },
+    {
+      "id": "pgstore-import-allowlist",
+      "scope": "go",
+      "from": "go.kenn.io/kata",
+      "to": ["go.kenn.io/kata/internal/db/pgstore"],
+      "except_from": [
+        "go.kenn.io/kata/cmd/kata",
+        "go.kenn.io/kata/internal/storageadmin",
+        "go.kenn.io/kata/internal/db/storeopen",
+        "go.kenn.io/kata/internal/db/pgstore"
+      ],
+      "except_from_exact": ["go.kenn.io/kata"],
+      "reason": "Process boundary: production code opens Postgres from the embeddable service, the CLI, storage admin, or storeopen."
+    },
+    {
+      "id": "storeopen-import-allowlist",
+      "scope": "go",
+      "from": "go.kenn.io/kata",
+      "to": ["go.kenn.io/kata/internal/db/storeopen"],
+      "except_from": [
+        "go.kenn.io/kata/cmd/kata",
+        "go.kenn.io/kata/internal/storageadmin"
+      ],
+      "except_from_exact": ["go.kenn.io/kata"],
+      "reason": "Process boundary: only the embeddable service, the CLI, and storage admin may import storeopen."
+    },
+    {
+      "id": "browser-no-node",
+      "scope": "browser",
+      "from": "web/src",
+      "to": [
+        "node:",
+        "fs",
+        "child_process",
+        "net",
+        "http",
+        "https",
+        "os",
+        "vm",
+        "worker_threads"
+      ],
+      "reason": "Process boundary: browser UI sources must not import Node side-effect modules. Scripts and Playwright tests live outside web/src."
+    },
+    {
+      "id": "kata-ui-no-node",
+      "scope": "kata-ui",
+      "from": "packages/kata-ui/src",
+      "to": [
+        "node:",
+        "fs",
+        "child_process",
+        "net",
+        "http",
+        "https",
+        "os",
+        "vm",
+        "worker_threads"
+      ],
+      "reason": "Process boundary: the shared UI package must not import Node side-effect modules."
+    }
+  ]
+}

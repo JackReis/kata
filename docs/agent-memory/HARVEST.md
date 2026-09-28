@@ -71,6 +71,10 @@ Fleet SoT map: Multica assigns · Open Engine protocol · Kata closes · Hermes 
 3. Soft ship: draft → review → Multica stamp → apply (profile-mutate way-of-work).
 4. CoS may soft-ship after stamp. Jack-gated: `--replace`, secrets, spend, and irreversible changes.
 
+## Import gates
+
+Dune multi-provider doctrine is enforced by `tools/duneimport`, not by prompt memory. The contract, banned edges, exit codes, and the copy recipe for other product seats are in `docs/DUNE-CI.md`. A missing or empty gate exits 2. Do not ship that tree.
+
 ## Read order when context is tight
 
 1. `AGENTS.md` (session contract; `CLAUDE.md` is the same file).
@@ -80,3 +84,4 @@ Fleet SoT map: Multica assigns · Open Engine protocol · Kata closes · Hermes 
 5. The single operations page for the surface you are touching (federation, GitHub sync, hosted mode, Postgres, remote daemon).
 6. `docs/agent-memory/BRANCHES.md` before reviving any remote branch.
 7. `docs/agent-memory/INDEX.json` for entrypoints and risks.
+8. `docs/DUNE-CI.md` before adding an import that crosses a feature or trust boundary.

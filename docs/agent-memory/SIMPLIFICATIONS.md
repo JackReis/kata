@@ -72,4 +72,4 @@ Module-root `service.go` (645 lines) plus `service_projects.go`, `service_federa
 
 ## 10. Keep this harvest off the public nav
 
-`docs/scripts/public_markdown_sources.py` publishes only markdown listed in `docs/zensical.toml`. These four files are intentionally unlisted. Adding them to the nav, or retargeting `repo_url` from `github.com/kenn-io/kata` to this checkout's origin, is a product-docs change, not a memory cleanup.
+`docs/scripts/public_markdown_sources.py` publishes only markdown listed in `docs/zensical.toml`. The files under `docs/agent-memory/` and `docs/DUNE-CI.md` are intentionally unlisted. Adding them to the nav, or retargeting `repo_url` from `github.com/kenn-io/kata` to this checkout's origin, is a product-docs change, not a memory cleanup.
