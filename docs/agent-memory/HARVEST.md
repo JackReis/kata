@@ -59,6 +59,40 @@ These are product contracts already written in `AGENTS.md`, `docs/design/archite
 11. **Do not assume MCP tools are preloaded.** Call the section loader (`kata.load_issue_discovery`, `kata.load_issue_mutation`, and the other eleven) before the typed tools.
 12. **Do not mark anonymous `--insecure-readonly` sessions writable.** That mode serves the shell and read snapshots only.
 13. **Do not publish this harvest** by adding it to `docs/zensical.toml` unless a docs owner asks. Leave `repo_url` pointed at the documented upstream.
+14. **Do not land a banned import.** `make import-bans` fails closed. Browser and `@kenn-io/kata-ui` sources stay on the declared UI allowlist and the credentialed API client. `pkg/` does not import privileged daemon internals except the two allowlisted edges below.
+
+## CI import bans (AEGI-178)
+
+Dune doctrine for this gate is skill `dune-electron-doctrine` and vault note `Architecture/fleet/DUNE-ELECTRON-VAULT-DOCTRINE-20260927.md` §3 (CI import-graph checks, FAIL-closed). Kata is the Open Engine / Kata lifecycle ledger, not an Electron app. The same banned-edge intent is applied to the planes this tree actually has.
+
+| Plane | Paths | Rule |
+| --- | --- | --- |
+| Browser | `web/src` except tests and `web/src/lib/dev-environment.ts` | No Node builtins, no `process` / `process.env` / `import.meta.env`, no `dotenv`, no relative import that leaves `web/src`, no host module, no package outside the UI allowlist |
+| Shared UI | `packages/kata-ui/src` | Same host bans, narrower package allowlist (`svelte`, `@kenn-io/kit-ui`) |
+| Credentialed API | `openapi-fetch` only from `web/src/lib/api/client.ts` | Anywhere else is `browser-uncredentialed-api-client` |
+| Public Go | `pkg/**` | No `go.kenn.io/kata/internal/...` except `internal/client` and `internal/connector/identityaudit` |
+| Assignment | browser and all Go | No Linear, Jira, Asana, Trello, or Multica client. Multica is the one assignment plane and it is not embedded here |
+
+Run it locally:
+
+```sh
+make import-bans
+```
+
+The Go CI job runs that target, and `go test ./...` runs `internal/importban` too. A parse failure or an unresolved relative import fails the command; the gate does not skip the file. A banned edge looks like:
+
+```text
+web/src/main.ts:1 [browser-node-builtin] banned import "node:fs" on the browser plane (privileged host module)
+pkg/client/shortcut.go:3 [public-pkg-privileged-internal] banned import "go.kenn.io/kata/internal/daemon" from public package pkg/client/shortcut.go; use the declared HTTP API client
+```
+
+Remaining edges that are allowlisted instead of rewritten:
+
+- `pkg/client` imports `go.kenn.io/kata/internal/client`, the declared HTTP transport.
+- `pkg/connector/conformance` imports `go.kenn.io/kata/internal/connector/identityaudit`.
+- `web/src/lib/dev-environment.ts` is host-only code that still lives under `web/src`. Browser files that import it fail with `browser-host-module`.
+
+Host packages (`cmd/kata`, `internal/daemon`, `internal/db`, `internal/tui`) are the privileged plane and may import the daemon and database. A new third-party UI package is denied until it is added to the allowlist in `internal/importban`.
 
 ## Fleet trust guidelines
 

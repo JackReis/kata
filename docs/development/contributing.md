@@ -41,7 +41,13 @@ make test
 make vet
 make lint
 make nilaway
+make import-bans
 ```
+
+`make import-bans` is the FAIL-closed import graph (AEGI-178). It also runs
+as part of `make test` / `go test ./...`. A banned edge prints
+`path:line [rule] message` and the command exits non-zero. See
+`docs/agent-memory/HARVEST.md`.
 
 ### Browser UI development
 
