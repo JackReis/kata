@@ -80,10 +80,16 @@ func DeriveProjectName(ctx context.Context, d DiscoveredPaths) (string, error) {
 		}
 		if remote != "" {
 			id, err := NormalizeRemoteURL(remote)
-			if err != nil {
+			switch {
+			case err == nil:
+				return lastSegment(id), nil
+			case isLocalRemote(remote):
+				// A filesystem-path remote names a local hub, not a hosted
+				// service; the directory is the only usable name source.
+				return filepath.Base(d.GitRoot), nil
+			default:
 				return "", err
 			}
-			return lastSegment(id), nil
 		}
 		return filepath.Base(d.GitRoot), nil
 	}
@@ -230,10 +236,21 @@ func ComputeAliasIdentity(ctx context.Context, d DiscoveredPaths) (AliasInfo, er
 		}
 		if remote != "" {
 			id, err := NormalizeRemoteURL(remote)
-			if err != nil {
+			switch {
+			case err == nil:
+				return AliasInfo{Identity: id, Kind: "git"}, nil
+			case isLocalRemote(remote):
+				// A filesystem-path or file:// remote points at a local hub
+				// rather than a hosted git service. The repository is still a
+				// usable workspace, so bind it by its local path instead of
+				// failing resolution on a URL form that has no host component.
+				return AliasInfo{
+					Identity: "local://" + d.GitRoot,
+					Kind:     "local",
+				}, nil
+			default:
 				return AliasInfo{}, err
 			}
-			return AliasInfo{Identity: id, Kind: "git"}, nil
 		}
 		return AliasInfo{
 			Identity: "local://" + d.GitRoot,
@@ -272,6 +289,23 @@ func readGitRemote(ctx context.Context, gitRoot string) (string, error) {
 }
 
 var gitRunner = gitcmd.New()
+
+// isLocalRemote reports whether a git remote URL names a location on this
+// filesystem - an absolute or relative path, or a file:// URL - rather than a
+// hosted git service. Local bare hubs are a supported workspace shape, but they
+// carry no host component, so NormalizeRemoteURL rejects them as unparsable.
+// Callers use this to fall back to the local-workspace identity instead of
+// failing resolution outright.
+func isLocalRemote(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	if strings.HasPrefix(raw, "file://") {
+		return true
+	}
+	return filepath.IsAbs(raw) || strings.HasPrefix(raw, "./") || strings.HasPrefix(raw, "../")
+}
 
 // NormalizeRemoteURL strips credentials, normalizes SSH↔HTTPS, drops trailing
 // .git, and returns "host/path" form (e.g. "github.com/wesm/kata").

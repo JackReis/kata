@@ -233,6 +233,47 @@ func TestComputeAliasIdentity_Neither(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestComputeAliasIdentity_FilesystemRemote covers a repository whose origin is
+// a local bare hub instead of a hosted git service. That remote still names a
+// real workspace, so alias resolution falls back to the local-workspace
+// identity instead of failing on remote-URL parsing. Reproduced before the fix:
+// `kata init` in such a repo exited 3 with
+// `parse remote url ".../hub-project.git": not a recognized form`.
+func TestComputeAliasIdentity_FilesystemRemote(t *testing.T) {
+	cases := []struct {
+		name   string
+		remote func(hub string) string
+	}{
+		{"absolute path", func(hub string) string { return hub }},
+		{"file scheme", func(hub string) string { return "file://" + hub }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := testfix.InitGitRepo(t)
+			hub := filepath.Join(t.TempDir(), "hub-project.git")
+			testfix.RunGit(t, dir, "remote", "add", "origin", tc.remote(hub))
+
+			a, err := config.ComputeAliasIdentity(t.Context(), config.DiscoveredPaths{GitRoot: dir})
+			require.NoError(t, err)
+			assert.Equal(t, "local://"+dir, a.Identity)
+			assert.Equal(t, "local", a.Kind)
+		})
+	}
+}
+
+// TestDeriveProjectName_FilesystemRemote covers the same repository shape at
+// init time: the default project name comes from the directory, not from a
+// remote URL that cannot be parsed.
+func TestDeriveProjectName_FilesystemRemote(t *testing.T) {
+	dir := testfix.InitGitRepo(t)
+	hub := filepath.Join(t.TempDir(), "hub-project.git")
+	testfix.RunGit(t, dir, "remote", "add", "origin", hub)
+
+	name, err := config.DeriveProjectName(t.Context(), config.DiscoveredPaths{GitRoot: dir})
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Base(dir), name)
+}
+
 func TestValidateIdentity(t *testing.T) {
 	cases := []struct {
 		in   string
